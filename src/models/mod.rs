@@ -188,6 +188,44 @@ pub fn parse_changelog(text: &str) -> Vec<ReleaseNotes> {
     notes
 }
 
+/// One pending driver-package upgrade: installed EVR → repo EVR.
+/// Sourced from `dnf5 check-upgrade --json` (libdnf5 compares EVRs).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageUpdate {
+    pub name: String,
+    pub arch: String,
+    pub from_evr: String,
+    pub to_evr: String,
+    pub repo: String,
+}
+
+impl PackageUpdate {
+    /// "old → new (repo)" for list subtitles and notifications.
+    pub fn summary(&self) -> String {
+        format!("{} → {} ({})", self.from_evr, self.to_evr, self.repo)
+    }
+
+    /// Stable identity for arrival/dismissal diffing across checks.
+    pub fn key(&self) -> String {
+        format!("{}:{}:{}", self.name, self.arch, self.to_evr)
+    }
+}
+
+/// Pure helpers for comparing update sets between checks.
+pub struct UpdateSet;
+
+impl UpdateSet {
+    /// Names present in `new` whose key was absent from `old`.
+    /// Drives "new updates available" notifications (no spam on re-scan).
+    pub fn newly_arrived(old: &[PackageUpdate], new: &[PackageUpdate]) -> Vec<String> {
+        let old_keys: std::collections::HashSet<String> = old.iter().map(|u| u.key()).collect();
+        new.iter()
+            .filter(|u| !old_keys.contains(&u.key()))
+            .map(|u| u.name.clone())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +299,33 @@ mod tests {
     fn empty_changelog_yields_no_notes() {
         assert!(parse_changelog("").is_empty());
         assert!(parse_changelog("# Changelog\n").is_empty());
+    }
+
+    #[test]
+    fn package_update_summary_line() {
+        let u = PackageUpdate {
+            name: "akmod-nvidia".to_string(),
+            arch: "x86_64".to_string(),
+            from_evr: "3:615.71.09-2.fc44".to_string(),
+            to_evr: "3:615.71.09-3.fc44".to_string(),
+            repo: "rpmfusion-nonfree-nvidia-driver".to_string(),
+        };
+        assert_eq!(u.summary(), "3:615.71.09-2.fc44 → 3:615.71.09-3.fc44 (rpmfusion-nonfree-nvidia-driver)");
+    }
+
+    #[test]
+    fn update_set_detects_new_arrivals() {
+        let mk = |n: &str| PackageUpdate {
+            name: n.to_string(),
+            arch: "x86_64".to_string(),
+            from_evr: "1".to_string(),
+            to_evr: "2".to_string(),
+            repo: "updates".to_string(),
+        };
+        let old = vec![mk("a")];
+        let new = vec![mk("a"), mk("b")];
+        assert_eq!(UpdateSet::newly_arrived(&old, &new), vec!["b".to_string()]);
+        assert!(UpdateSet::newly_arrived(&new, &old).is_empty());
+        assert!(UpdateSet::newly_arrived(&old, &old).is_empty());
     }
 }
