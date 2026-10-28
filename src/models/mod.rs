@@ -226,6 +226,68 @@ impl UpdateSet {
     }
 }
 
+/// Persisted updater preferences + last-notified state.
+/// File: `<user_config_dir>/driver-manager/updater.json`.
+/// Missing/corrupt file → `default()` (never an error to the UI).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdaterSettings {
+    #[serde(default = "default_true")]
+    pub auto_check: bool,
+    #[serde(default = "default_interval")]
+    pub interval_hours: u64,
+    #[serde(default)]
+    pub last_notified_keys: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_interval() -> u64 {
+    6
+}
+
+impl Default for UpdaterSettings {
+    fn default() -> Self {
+        Self { auto_check: true, interval_hours: 6, last_notified_keys: Vec::new() }
+    }
+}
+
+impl UpdaterSettings {
+    /// Clamp to [1h, 168h]; out-of-range config values can't wedge the timer.
+    pub fn clamp_interval(hours: u64) -> u64 {
+        hours.clamp(1, 168)
+    }
+
+    pub fn config_path() -> std::path::PathBuf {
+        let mut dir = glib::user_config_dir();
+        dir.push("driver-manager");
+        dir.push("updater.json");
+        dir
+    }
+
+    /// Load or default. Corrupt JSON → default (and the next save heals it).
+    pub fn load() -> Self {
+        std::fs::read_to_string(Self::config_path())
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .map(|mut s: Self| {
+                s.interval_hours = Self::clamp_interval(s.interval_hours);
+                s
+            })
+            .unwrap_or_default()
+    }
+
+    /// Save (creating parent dirs). Errors propagate to a toast, not a crash.
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(self)?)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +389,28 @@ mod tests {
         assert_eq!(UpdateSet::newly_arrived(&old, &new), vec!["b".to_string()]);
         assert!(UpdateSet::newly_arrived(&new, &old).is_empty());
         assert!(UpdateSet::newly_arrived(&old, &old).is_empty());
+    }
+
+    #[test]
+    fn settings_default_is_auto_check_on_6h() {
+        let s = UpdaterSettings::default();
+        assert!(s.auto_check);
+        assert_eq!(s.interval_hours, 6);
+        assert!(s.last_notified_keys.is_empty());
+    }
+
+    #[test]
+    fn settings_roundtrip_ignores_unknown_fields() {
+        let json = r#"{"auto_check":false,"interval_hours":24,"last_notified_keys":["a"],"future_field":1}"#;
+        let s: UpdaterSettings = serde_json::from_str(json).unwrap();
+        assert!(!s.auto_check);
+        assert_eq!(s.interval_hours, 24);
+    }
+
+    #[test]
+    fn interval_clamped_to_sane_range() {
+        assert_eq!(UpdaterSettings::clamp_interval(0), 1);
+        assert_eq!(UpdaterSettings::clamp_interval(1000), 168);
+        assert_eq!(UpdaterSettings::clamp_interval(12), 12);
     }
 }
