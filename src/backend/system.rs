@@ -201,6 +201,7 @@ impl SystemBackend {
 #[derive(Debug, Clone)]
 pub enum RootAction {
     DnfInstall { package: String },
+    DnfReinstall { package: String },
     HistoryUndo { id: u64 },
 }
 
@@ -208,10 +209,22 @@ impl RootAction {
     /// `dnf5 install -y <package>`, rejecting anything that is not a plain
     /// package name (`^[A-Za-z0-9][A-Za-z0-9.+_-]*$`) before pkexec is reached.
     pub fn dnf_install(package: &str) -> Result<Self> {
+        Ok(Self::DnfInstall {
+            package: Self::validated_package(package)?,
+        })
+    }
+
+    /// `dnf5 reinstall -y <package>` for already-installed drivers (repair).
+    /// Same name validation as [`Self::dnf_install`].
+    pub fn dnf_reinstall(package: &str) -> Result<Self> {
+        Ok(Self::DnfReinstall {
+            package: Self::validated_package(package)?,
+        })
+    }
+
+    fn validated_package(package: &str) -> Result<String> {
         if valid_package_name(package) {
-            Ok(Self::DnfInstall {
-                package: package.to_string(),
-            })
+            Ok(package.to_string())
         } else {
             anyhow::bail!("invalid package name: {package:?}")
         }
@@ -228,6 +241,9 @@ impl RootAction {
         match self {
             Self::DnfInstall { package } => {
                 vec!["/usr/bin/dnf5".to_string(), "install".to_string(), "-y".to_string(), package.clone()]
+            }
+            Self::DnfReinstall { package } => {
+                vec!["/usr/bin/dnf5".to_string(), "reinstall".to_string(), "-y".to_string(), package.clone()]
             }
             Self::HistoryUndo { id } => vec![
                 "/usr/bin/dnf5".to_string(),
@@ -641,6 +657,21 @@ mod tests {
             "/usr/bin/dnf5"
         );
         assert_eq!(RootAction::history_undo(66).argv()[0], "/usr/bin/dnf5");
+    }
+
+    #[test]
+    fn reinstall_argv_is_absolute_dnf5_reinstall() {
+        let argv = RootAction::dnf_reinstall("akmod-nvidia").expect("valid").argv();
+        assert_eq!(argv[0], "/usr/bin/dnf5");
+        assert_eq!(argv[1], "reinstall");
+        assert_eq!(argv[2], "-y");
+        assert_eq!(argv[3], "akmod-nvidia");
+    }
+
+    #[test]
+    fn reinstall_rejects_invalid_names() {
+        assert!(RootAction::dnf_reinstall("foo;rm -rf /").is_err());
+        assert!(RootAction::dnf_reinstall("").is_err());
     }
 
     #[test]

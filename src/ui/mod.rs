@@ -710,6 +710,7 @@ fn add_drivers_page(
                 row.add_prefix(&Image::from_icon_name("package-x-generic-symbolic"));
                 if pkg.installed_evr.is_some() {
                     row.add_suffix(&Image::from_icon_name("emblem-ok-symbolic"));
+                    row.add_suffix(&make_reinstall_button(&pkg.name, toast_overlay));
                 } else if pkg.preferred_available().is_some() {
                     row.add_suffix(&make_install_button(&pkg.name, toast_overlay));
                 } else if let Some(hint) = repo_hint(&pkg.name) {
@@ -839,8 +840,26 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
 /// Shared by device rows and the Available Drivers page; the flow is:
 /// confirm -> `RootAction::dnf_install` validation -> `execute_root_async` -> toast.
 fn make_install_button(package: &str, toast_overlay: &Rc<ToastOverlay>) -> Button {
-    // The button runs `dnf5 install -y <pkg>` as root: label it honestly.
-    let btn_label = format!("Install {package}");
+    make_package_action_button(package, toast_overlay, false)
+}
+
+fn make_reinstall_button(package: &str, toast_overlay: &Rc<ToastOverlay>) -> Button {
+    make_package_action_button(package, toast_overlay, true)
+}
+
+/// Install/Reinstall button with destructive confirmation dialog.
+/// `reinstall` selects `dnf5 reinstall -y` (repair) instead of install;
+/// validation, confirm dialog, and toasts are otherwise identical.
+fn make_package_action_button(
+    package: &str,
+    toast_overlay: &Rc<ToastOverlay>,
+    reinstall: bool,
+) -> Button {
+    let verb = if reinstall { "Reinstall" } else { "Install" };
+    let dnf_cmd = if reinstall { "reinstall" } else { "install" };
+    let done_word = if reinstall { "reinstalled" } else { "installed" };
+    // The button runs `dnf5 {install,reinstall} -y <pkg>` as root: label it honestly.
+    let btn_label = format!("{verb} {package}");
 
     let action_btn = Button::builder()
         .label(&btn_label)
@@ -851,7 +870,7 @@ fn make_install_button(package: &str, toast_overlay: &Rc<ToastOverlay>) -> Butto
     let pkg_clone = package.to_string();
     let toast_c = toast_overlay.clone();
     action_btn.connect_clicked(move |btn| {
-        // Confirm before running a privileged install: show what will run as root.
+        // Confirm before running a privileged action: show what will run as root.
         let toast_c = toast_c.clone();
         let p = pkg_clone.clone();
         let parent = btn
@@ -859,12 +878,12 @@ fn make_install_button(package: &str, toast_overlay: &Rc<ToastOverlay>) -> Butto
             .and_then(|root| root.downcast::<gtk4::Window>().ok());
         let dialog = adw::MessageDialog::new(
             parent.as_ref(),
-            Some(&format!("Install {p}?")),
+            Some(&format!("{verb} {p}?")),
             Some(&format!(
-                "This will run the following command as root:\n\ndnf5 install -y {p}"
+                "This will run the following command as root:\n\ndnf5 {dnf_cmd} -y {p}"
             )),
         );
-        dialog.add_responses(&[("cancel", "Cancel"), ("install", "Install")]);
+        dialog.add_responses(&[("cancel", "Cancel"), ("install", verb)]);
         dialog.set_response_appearance("install", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
@@ -873,19 +892,27 @@ fn make_install_button(package: &str, toast_overlay: &Rc<ToastOverlay>) -> Butto
                 let toast = toast_c.clone();
                 let p = p.clone();
                 // Validate before pkexec: malicious names never reach root.
-                match RootAction::dnf_install(&p) {
+                let action = if reinstall {
+                    RootAction::dnf_reinstall(&p)
+                } else {
+                    RootAction::dnf_install(&p)
+                };
+                match action {
                     Ok(action) => {
                         glib::spawn_future_local(async move {
-                            toast.add_toast(Toast::new(&format!("Running dnf5 install for {}...", p)));
+                            toast.add_toast(Toast::new(&format!("Running dnf5 {dnf_cmd} for {}...", p)));
                             let res = SystemBackend::execute_root_async(action).await;
                             match res {
-                                Ok(_) => toast.add_toast(Toast::new(&format!("{} installed successfully!", p))),
+                                Ok(_) => toast.add_toast(Toast::new(&format!(
+                                    "{} {} successfully!",
+                                    p, done_word
+                                ))),
                                 Err(e) => toast.add_toast(Toast::new(&format!("Failed: {}", e))),
                             }
                         });
                     }
                     Err(e) => {
-                        toast.add_toast(Toast::new(&format!("Refusing to install '{}': {}", p, e)));
+                        toast.add_toast(Toast::new(&format!("Refusing privileged action on '{}': {}", p, e)));
                     }
                 }
             }
