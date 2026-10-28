@@ -61,7 +61,6 @@ pub fn build_ui(app: &adw::Application) {
         ("firmware", "Firmware Updates", "software-update-available-symbolic"),
         ("history", "History and Rollback", "document-revert-symbolic"),
         ("drivers", "Available Drivers", "package-x-generic-symbolic"),
-        ("changelog", "What's New", "document-open-recent-symbolic"),
     ];
 
     for (id, label, icon) in &categories {
@@ -110,6 +109,7 @@ pub fn build_ui(app: &adw::Application) {
         .tooltip_text("Main Menu")
         .build();
     let menu = gio::Menu::new();
+    menu.append(Some("What's New"), Some("win.whatsnew"));
     menu.append(Some("About Driver Manager"), Some("win.about"));
     menu_btn.set_menu_model(Some(&menu));
     content_header.pack_end(&menu_btn);
@@ -166,7 +166,6 @@ pub fn build_ui(app: &adw::Application) {
                 "firmware" => header_title_clone.set_title("Firmware Updates"),
                 "history" => header_title_clone.set_title("History and Rollback"),
                 "drivers" => header_title_clone.set_title("Available Drivers"),
-                "changelog" => header_title_clone.set_title("What's New"),
                 _ => header_title_clone.set_title("Hardware Details"),
             }
         }
@@ -209,6 +208,16 @@ pub fn build_ui(app: &adw::Application) {
         });
     }
     window.add_action(&about_action);
+
+    // What's New action (window-scoped): release notes dialog next to About.
+    let whatsnew_action = gio::SimpleAction::new("whatsnew", None);
+    {
+        let window_clone = window.clone();
+        whatsnew_action.connect_activate(move |_, _| {
+            show_whatsnew_dialog(&window_clone);
+        });
+    }
+    window.add_action(&whatsnew_action);
 
     window.present();
 }
@@ -625,7 +634,6 @@ fn render_data(
     stack.add_named(&wrap_in_scrolled(hist_page), Some("history"));
 
     add_drivers_page(stack, &results.driver_packages, toast_overlay);
-    add_changelog_page(stack);
 }
 
 fn add_category_page(
@@ -718,14 +726,16 @@ fn add_drivers_page(
     stack.add_named(&wrap_in_scrolled(page), Some("drivers"));
 }
 
-/// "What's New" page: the running version's notes first (marked current),
-/// older releases as history. Content comes from embedded CHANGELOG.md;
-/// empty notes render a graceful placeholder, never a blank page.
-fn add_changelog_page(stack: &gtk4::Stack) {
-    let page = PreferencesPage::new();
+/// What's New dialog (header menu, next to About): the running version's
+/// notes on the first page, older releases as history pages. Content
+/// comes from embedded CHANGELOG.md; empty notes render a graceful
+/// placeholder, never a blank dialog.
+fn show_whatsnew_dialog(parent: &adw::ApplicationWindow) {
+    let dialog = adw::PreferencesDialog::builder().title("What's New").build();
     let notes = SystemBackend::get_release_notes();
     let current = env!("CARGO_PKG_VERSION");
     if notes.is_empty() {
+        let page = PreferencesPage::builder().title("Release notes").build();
         let group = PreferencesGroup::builder().title("Release notes").build();
         group.add(
             &ActionRow::builder()
@@ -733,13 +743,15 @@ fn add_changelog_page(stack: &gtk4::Stack) {
                 .build(),
         );
         page.add(&group);
+        dialog.add(&page);
     } else {
-        for (i, rel) in notes.iter().enumerate() {
+        for rel in &notes {
             let title = if rel.version == current {
                 format!("{} ({}) — this version", rel.version, rel.date)
             } else {
                 format!("{} ({})", rel.version, rel.date)
             };
+            let page = PreferencesPage::builder().title(title.as_str()).build();
             let group = PreferencesGroup::builder().title(title.as_str()).build();
             if rel.bullets.is_empty() {
                 group.add(&ActionRow::builder().title("No details recorded").build());
@@ -753,14 +765,11 @@ fn add_changelog_page(stack: &gtk4::Stack) {
                         .build(),
                 );
             }
-            // Collapse history: only the current (first matching) group
-            // starts expanded — PreferencesGroups have no collapse API, so
-            // instead show all; newest-first order keeps history out of the way.
-            let _ = i;
             page.add(&group);
+            dialog.add(&page);
         }
     }
-    stack.add_named(&wrap_in_scrolled(page), Some("changelog"));
+    dialog.present(Some(parent));
 }
 
 fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> ExpanderRow {
