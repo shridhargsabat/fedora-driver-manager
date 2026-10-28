@@ -249,7 +249,7 @@ impl HardwareScanner {
                     DeviceCategory::Other
                 };
 
-                let vendor = name.split_whitespace().next().unwrap_or("USB Device").to_string();
+                let vendor = Self::usb_vendor_from_name(name).to_string();
 
                 devices.push(HardwareDevice {
                     id: format!("usb:{}:{}", bus, dev),
@@ -272,6 +272,18 @@ impl HardwareScanner {
         // output is genuine-empty, not a format mismatch.
         let warning = Self::format_mismatch_warning("lsusb", stdout, recognized);
         Ok(ParseOutcome { devices, warning })
+    }
+
+    /// First whitespace-delimited token of an lsusb product string, minus
+    /// trailing punctuation (`"Logitech, Inc. ..."` -> `"Logitech"`).
+    fn usb_vendor_from_name(name: &str) -> &str {
+        name.split_whitespace()
+            .next()
+            .map(|token| {
+                token.trim_end_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or("USB Device")
     }
 
     fn categorize_pci(class_code: &str, name: &str) -> DeviceCategory {
@@ -667,5 +679,29 @@ mod tests {
             HardwareScanner::parse_usb_output(LSUSB_UNRECOGNIZED_FIXTURE).expect("parse must not fail");
         assert!(outcome.devices.is_empty());
         assert!(outcome.warning.is_some(), "expected a format-mismatch warning");
+    }
+
+    #[test]
+    fn usb_vendor_strips_trailing_punctuation() {
+        assert_eq!(
+            HardwareScanner::usb_vendor_from_name("Logitech, Inc. Unifying Receiver"),
+            "Logitech"
+        );
+        assert_eq!(HardwareScanner::usb_vendor_from_name("Logitech USB Receiver"), "Logitech");
+        assert_eq!(HardwareScanner::usb_vendor_from_name("Acme... Widget"), "Acme");
+        assert_eq!(HardwareScanner::usb_vendor_from_name(""), "USB Device");
+        assert_eq!(HardwareScanner::usb_vendor_from_name(",,,"), "USB Device");
+    }
+
+    const LSUSB_VENDOR_PUNCT_FIXTURE: &str =
+        "Bus 001 Device 003: ID 046d:c52b Logitech, Inc. Unifying Receiver\n";
+
+    #[test]
+    fn parsed_usb_vendor_has_no_trailing_comma() {
+        let outcome = HardwareScanner::parse_usb_output(LSUSB_VENDOR_PUNCT_FIXTURE)
+            .expect("fixture must parse");
+        assert_eq!(outcome.devices.len(), 1);
+        assert_eq!(outcome.devices[0].vendor, "Logitech");
+        assert_eq!(outcome.devices[0].name, "Logitech, Inc. Unifying Receiver");
     }
 }
