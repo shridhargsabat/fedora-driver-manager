@@ -3,3 +3,4 @@
 *.srpm
 vendor/
 packaging/*.tar.gz
+.worktrees/
