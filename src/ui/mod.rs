@@ -9,6 +9,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 pub fn build_ui(app: &adw::Application) {
+    // Single-instance reuse: grid/launcher activation can deliver `activate`
+    // more than once (startup + forwarded from the second process). Never
+    // build a second window — present the existing one.
+    if let Some(window) = app.active_window() {
+        window.present();
+        return;
+    }
+
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Fedora Driver Manager")
