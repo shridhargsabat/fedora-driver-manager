@@ -153,8 +153,14 @@ fn refresh_data(
     devices_state: &Rc<RefCell<Vec<HardwareDevice>>>,
     toast_overlay: &Rc<ToastOverlay>,
 ) {
-    let scanned = HardwareScanner::scan_all().unwrap_or_default();
+    let scan_result = HardwareScanner::scan_all();
+    let scan_error: Option<String> = scan_result.as_ref().err().map(ToString::to_string);
+    let scanned: Vec<HardwareDevice> = scan_result.unwrap_or_default();
     *devices_state.borrow_mut() = scanned.clone();
+
+    if let Some(err) = &scan_error {
+        toast_overlay.add_toast(Toast::new(&format!("Hardware scan failed: {err}")));
+    }
 
     // Drop existing stack pages first: re-adding the same child names is
     // rejected by GtkStack ("Duplicate child name"), which made Refresh a
@@ -197,11 +203,40 @@ fn refresh_data(
     let optimal_count = scanned.iter().filter(|d| d.status == DriverStatus::Optimal).count();
     let action_count = scanned.iter().filter(|d| d.status == DriverStatus::Upgradable || d.status == DriverStatus::Missing).count();
 
+    let (health_title, health_subtitle, health_icon_name) = if scanned.is_empty() {
+        // A 0-device scan (missing lspci/lsusb, empty output) means we know
+        // nothing about the hardware: never report "optimal" here.
+        match &scan_error {
+            Some(err) => (
+                "Hardware scan failed — status unknown".to_string(),
+                format!("Could not enumerate devices: {err}"),
+                "dialog-question-symbolic",
+            ),
+            None => (
+                "No hardware devices detected — status unknown".to_string(),
+                "lspci/lsusb returned no devices; status cannot be determined".to_string(),
+                "dialog-question-symbolic",
+            ),
+        }
+    } else if action_count == 0 {
+        (
+            "All devices operating optimally".to_string(),
+            format!("{optimal_count} optimal, {action_count} actionable"),
+            "emblem-ok-symbolic",
+        )
+    } else {
+        (
+            "Updates or attention recommended".to_string(),
+            format!("{optimal_count} optimal, {action_count} actionable"),
+            "dialog-warning-symbolic",
+        )
+    };
+
     let health_row = ActionRow::builder()
-        .title(if action_count == 0 { "All devices operating optimally" } else { "Updates or attention recommended" })
-        .subtitle(&format!("{} optimal, {} actionable", optimal_count, action_count))
+        .title(&health_title)
+        .subtitle(&health_subtitle)
         .build();
-    let health_icon = Image::from_icon_name(if action_count == 0 { "emblem-ok-symbolic" } else { "dialog-warning-symbolic" });
+    let health_icon = Image::from_icon_name(health_icon_name);
     health_icon.set_pixel_size(16);
     health_row.add_prefix(&health_icon);
     health_group.add(&health_row);
