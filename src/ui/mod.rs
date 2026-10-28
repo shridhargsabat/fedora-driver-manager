@@ -1,10 +1,10 @@
-use crate::backend::hardware::HardwareScanner;
+use crate::backend::hardware::{HardwareScanner, ScanReport};
 use crate::backend::system::SystemBackend;
-use crate::models::{DeviceCategory, DriverStatus, HardwareDevice};
+use crate::models::{DeviceCategory, DnfTransaction, DriverStatus, FirmwareItem, HardwareDevice};
 use adw::prelude::*;
 use adw::{ActionRow, ExpanderRow, HeaderBar, NavigationPage, NavigationSplitView, PreferencesGroup, PreferencesPage, Toast, ToastOverlay, WindowTitle};
 use gtk4::prelude::{IsA, WidgetExt};
-use gtk4::{Align, Box, Button, Image, Label, Orientation, PolicyType, ScrolledWindow};
+use gtk4::{Align, Box, Button, Image, Label, Orientation, PolicyType, ScrolledWindow, Spinner};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -87,6 +87,10 @@ pub fn build_ui(app: &adw::Application) {
         .tooltip_text("Rescan Hardware")
         .build();
     content_header.pack_end(&refresh_btn);
+
+    let spinner = Spinner::new();
+    spinner.set_tooltip_text(Some("Scanning hardware…"));
+    content_header.pack_end(&spinner);
     content_box.append(&content_header);
 
     let stack = gtk4::Stack::builder()
@@ -105,11 +109,14 @@ pub fn build_ui(app: &adw::Application) {
     let devices_state = Rc::new(RefCell::new(Vec::<HardwareDevice>::new()));
     let toast_ref = Rc::new(toast_overlay);
 
-    // Initial population
-    refresh_data(
-        &stack,
-        &devices_state,
-        &toast_ref,
+    // Initial population (async: scans run off the main thread)
+    refresh_data_async(
+        stack.clone(),
+        devices_state.clone(),
+        toast_ref.clone(),
+        spinner.clone(),
+        refresh_btn.clone(),
+        false,
     );
 
     // Sidebar selection handler
@@ -136,24 +143,93 @@ pub fn build_ui(app: &adw::Application) {
         }
     });
 
-    // Refresh button handler
+    // Refresh button handler (async re-scan; success toast gated on clean scan)
     let stack_clone2 = stack.clone();
     let devices_clone2 = devices_state.clone();
     let toast_clone2 = toast_ref.clone();
+    let spinner_clone2 = spinner.clone();
+    let refresh_clone2 = refresh_btn.clone();
     refresh_btn.connect_clicked(move |_| {
-        refresh_data(&stack_clone2, &devices_clone2, &toast_clone2);
-        toast_clone2.add_toast(Toast::new("Hardware re-scanned successfully"));
+        refresh_data_async(
+            stack_clone2.clone(),
+            devices_clone2.clone(),
+            toast_clone2.clone(),
+            spinner_clone2.clone(),
+            refresh_clone2.clone(),
+            true,
+        );
     });
 
     window.present();
 }
 
-fn refresh_data(
+/// Blocking scan results, collected on a worker thread so the GTK main
+/// thread stays responsive. All fields are plain data (`Send`), and backend
+/// errors travel as pre-rendered strings.
+struct ScanResults {
+    report: ScanReport,
+    firmware: Result<Vec<FirmwareItem>, String>,
+    history: Result<Vec<DnfTransaction>, String>,
+    laptop_model: String,
+    secure_boot: String,
+}
+
+impl ScanResults {
+    fn collect() -> Self {
+        Self {
+            report: HardwareScanner::scan_all_report(),
+            firmware: SystemBackend::get_firmware_devices().map_err(|e| format!("{e:#}")),
+            history: SystemBackend::get_dnf_history(10).map_err(|e| format!("{e:#}")),
+            laptop_model: SystemBackend::get_laptop_model(),
+            secure_boot: SystemBackend::get_secure_boot_state(),
+        }
+    }
+}
+
+/// Re-scan hardware off the main thread: spin the header spinner, collect
+/// `ScanResults` via `gio::spawn_blocking`, then render back on the main
+/// thread (toasts included). The Refresh button is desensitized while a scan
+/// is in flight so scans cannot overlap.
+fn refresh_data_async(
+    stack: gtk4::Stack,
+    devices_state: Rc<RefCell<Vec<HardwareDevice>>>,
+    toast_overlay: Rc<ToastOverlay>,
+    spinner: Spinner,
+    refresh_btn: Button,
+    success_toast: bool,
+) {
+    spinner.start();
+    refresh_btn.set_sensitive(false);
+    glib::spawn_future_local(async move {
+        let results = match gio::spawn_blocking(ScanResults::collect).await {
+            Ok(results) => results,
+            Err(_) => {
+                toast_overlay.add_toast(Toast::new("Hardware scan task did not complete"));
+                spinner.stop();
+                refresh_btn.set_sensitive(true);
+                return;
+            }
+        };
+        // Gate the success toast on a genuinely clean scan: every failure
+        // path already produced its own error toast in render_data.
+        let clean =
+            results.report.errors().is_empty() && results.firmware.is_ok() && results.history.is_ok();
+        render_data(&stack, &devices_state, &toast_overlay, results);
+        if success_toast && clean {
+            toast_overlay.add_toast(Toast::new("Hardware re-scanned successfully"));
+        }
+        spinner.stop();
+        refresh_btn.set_sensitive(true);
+    });
+}
+
+fn render_data(
     stack: &gtk4::Stack,
     devices_state: &Rc<RefCell<Vec<HardwareDevice>>>,
     toast_overlay: &Rc<ToastOverlay>,
+    results: ScanResults,
 ) {
-    let report = HardwareScanner::scan_all_report();
+    let report = results.report;
     let scan_errors = report.errors();
     let scan_error: Option<String> = report
         .all_backends_failed()
@@ -184,12 +260,12 @@ fn refresh_data(
         .title("System Overview")
         .description(format!(
             "Device: {}",
-            glib::markup_escape_text(&SystemBackend::get_laptop_model())
+            glib::markup_escape_text(&results.laptop_model)
         ))
         .build();
 
     let sb_row = ActionRow::builder()
-        .title(SystemBackend::get_secure_boot_state())
+        .title(results.secure_boot.as_str())
         .subtitle("Kernel module signature verification")
         .build();
     let sb_icon = Image::from_icon_name("security-high-symbolic");
@@ -306,18 +382,18 @@ fn refresh_data(
 
     // Distinguish "tool failed" (error row + toast) from "genuine empty
     // result" ("none found" row) instead of rendering a silent empty group.
-    let fw_result = SystemBackend::get_firmware_devices();
+    let fw_result = results.firmware;
     if let Err(e) = &fw_result {
         let err_row = ActionRow::builder()
             .title("Firmware scan failed")
-            .subtitle(format!("fwupdmgr error: {e:#}"))
+            .subtitle(format!("fwupdmgr error: {e}"))
             .use_markup(false)
             .build();
         let err_icon = Image::from_icon_name("dialog-error-symbolic");
         err_icon.set_pixel_size(16);
         err_row.add_prefix(&err_icon);
         fw_group.add(&err_row);
-        toast_overlay.add_toast(Toast::new(&format!("Firmware scan failed: {e:#}")));
+        toast_overlay.add_toast(Toast::new(&format!("Firmware scan failed: {e}")));
     }
     if let Ok(fw_devices) = &fw_result {
         for fw in fw_devices {
@@ -361,18 +437,18 @@ fn refresh_data(
         .description("DNF history records available for undo / rollback")
         .build();
 
-    let hist_result = SystemBackend::get_dnf_history(10);
+    let hist_result = results.history;
     if let Err(e) = &hist_result {
         let err_row = ActionRow::builder()
             .title("Transaction history unavailable")
-            .subtitle(format!("dnf5 error: {e:#}"))
+            .subtitle(format!("dnf5 error: {e}"))
             .use_markup(false)
             .build();
         let err_icon = Image::from_icon_name("dialog-error-symbolic");
         err_icon.set_pixel_size(16);
         err_row.add_prefix(&err_icon);
         hist_group.add(&err_row);
-        toast_overlay.add_toast(Toast::new(&format!("Transaction history unavailable: {e:#}")));
+        toast_overlay.add_toast(Toast::new(&format!("Transaction history unavailable: {e}")));
     }
     if let Ok(transactions) = &hist_result {
         for tx in transactions {
