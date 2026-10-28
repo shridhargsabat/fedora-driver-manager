@@ -19,6 +19,9 @@ sudo install -Dm644 data/io.github.shridhargsabat.DriverManager.svg /usr/local/s
 echo "==> Installing PolicyKit action policy..."
 sudo install -Dm644 data/io.github.shridhargsabat.DriverManager.policy /usr/share/polkit-1/actions/io.github.shridhargsabat.DriverManager.policy
 
+echo "==> Installing D-Bus service file..."
+sudo install -Dm644 data/io.github.shridhargsabat.DriverManager.service /usr/local/share/dbus-1/services/io.github.shridhargsabat.DriverManager.service
+
 echo "==> Updating desktop database..."
 sudo update-desktop-database /usr/local/share/applications || true
 

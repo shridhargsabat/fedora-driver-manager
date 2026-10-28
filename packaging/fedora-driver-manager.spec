@@ -45,6 +45,7 @@ install -Dpm0644 data/io.github.shridhargsabat.DriverManager.desktop -t %{buildr
 install -Dpm0644 data/io.github.shridhargsabat.DriverManager.metainfo.xml -t %{buildroot}%{_datadir}/metainfo
 install -Dpm0644 data/io.github.shridhargsabat.DriverManager.svg -t %{buildroot}%{_datadir}/icons/hicolor/scalable/apps
 install -Dpm0644 data/io.github.shridhargsabat.DriverManager.policy -t %{buildroot}%{_datadir}/polkit-1/actions
+install -Dpm0644 data/io.github.shridhargsabat.DriverManager.service -t %{buildroot}%{_datadir}/dbus-1/services
 
 %check
 desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.shridhargsabat.DriverManager.desktop
@@ -60,6 +61,7 @@ appstreamcli validate --no-net %{buildroot}%{_datadir}/metainfo/io.github.shridh
 %{_datadir}/metainfo/io.github.shridhargsabat.DriverManager.metainfo.xml
 %{_datadir}/icons/hicolor/scalable/apps/io.github.shridhargsabat.DriverManager.svg
 %{_datadir}/polkit-1/actions/io.github.shridhargsabat.DriverManager.policy
+%{_datadir}/dbus-1/services/io.github.shridhargsabat.DriverManager.service
 
 %changelog
 %autochangelog
