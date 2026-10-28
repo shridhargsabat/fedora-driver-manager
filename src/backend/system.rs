@@ -1,4 +1,4 @@
-use crate::models::{DnfTransaction, DriverPackage, FirmwareItem, PackageBuild, ReleaseNotes, parse_changelog};
+use crate::models::{DnfTransaction, DriverPackage, FirmwareItem, PackageBuild, PackageUpdate, ReleaseNotes, parse_changelog};
 use anyhow::Result;
 use std::process::Command;
 
@@ -193,6 +193,50 @@ impl SystemBackend {
     pub fn get_release_notes() -> Vec<ReleaseNotes> {
         parse_changelog(include_str!("../../CHANGELOG.md"))
     }
+
+    /// Parse `dnf5 check-upgrade --json`, keeping only upgrades for packages
+    /// the app tracks AND that are installed (need `installed_evr` baseline
+    /// from the `DriverPackage` list the caller already resolved). Unknown
+    /// packages and not-installed entries are skipped, never errors.
+    fn parse_pending_updates(stdout: &str, known: &[DriverPackage]) -> Result<Vec<PackageUpdate>> {
+        let output: CheckUpgradeOutput = serde_json::from_str(stdout)?;
+        Ok(output
+            .upgrades
+            .iter()
+            .filter_map(|entry| {
+                let tracked = known.iter().find(|p| p.name == entry.name)?;
+                let from_evr = tracked.installed_evr.clone()?;
+                Some(PackageUpdate {
+                    name: entry.name.clone(),
+                    arch: entry.arch.clone(),
+                    from_evr,
+                    to_evr: entry.evr.clone(),
+                    repo: entry.repository.clone(),
+                })
+            })
+            .collect())
+    }
+
+    /// Query pending driver upgrades (unprivileged, read-only). Pass the
+    /// candidate names for a scoped query (see Task 0) plus the installed
+    /// baselines from `get_driver_packages`.
+    pub fn get_pending_updates(names: &[&str], known: &[DriverPackage]) -> Result<Vec<PackageUpdate>> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        for name in names {
+            if !valid_package_name(name) {
+                anyhow::bail!("invalid package name: {name:?}");
+            }
+        }
+        // Absolute path per file convention (unprivileged, but consistent).
+        let output = Command::new("/usr/bin/dnf5")
+            .args(["check-upgrade", "--json"])
+            .args(names)
+            .output()?;
+        Self::ensure_command_success("dnf5", &output)?;
+        Self::parse_pending_updates(&String::from_utf8_lossy(&output.stdout), known)
+    }
 }
 
 /// Privileged operations allowed to run as root via pkexec. The closed set
@@ -330,6 +374,20 @@ struct DnfInfoOutput {
     installed_packages: Vec<DnfInfoEntry>,
     #[serde(default)]
     available_packages: Vec<DnfInfoEntry>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CheckUpgradeEntry {
+    name: String,
+    arch: String,
+    evr: String,
+    repository: String,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct CheckUpgradeOutput {
+    #[serde(default)]
+    upgrades: Vec<CheckUpgradeEntry>,
 }
 
 /// Derive a short action label ("install", "remove", ...) from a full
@@ -772,5 +830,48 @@ mod tests {
             "no changelog entry for {}",
             env!("CARGO_PKG_VERSION")
         );
+    }
+
+    const CHECK_UPGRADE_FIXTURE: &str = r#"{
+  "upgrades":[
+    {"name":"akmod-nvidia","arch":"x86_64","evr":"3:615.71.09-3.fc44","repository":"rpmfusion-nonfree-nvidia-driver"},
+    {"name":"unrelated-pkg","arch":"x86_64","evr":"9-9.fc44","repository":"updates"}
+  ]
+}"#;
+
+    fn driver_pkg(name: &str, installed: Option<&str>) -> DriverPackage {
+        DriverPackage { name: name.to_string(), installed_evr: installed.map(str::to_string), available: Vec::new() }
+    }
+
+    #[test]
+    fn parses_upgrades_filtered_to_known_packages() {
+        let installed = vec![driver_pkg("akmod-nvidia", Some("3:615.71.09-2.fc44"))];
+        let updates = SystemBackend::parse_pending_updates(CHECK_UPGRADE_FIXTURE, &installed).unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "akmod-nvidia");
+        assert_eq!(updates[0].from_evr, "3:615.71.09-2.fc44");
+        assert_eq!(updates[0].to_evr, "3:615.71.09-3.fc44");
+    }
+
+    #[test]
+    fn skips_upgrades_for_not_installed_packages() {
+        // Upgrade listed but package not installed (or unknown): no baseline → skip.
+        let installed = vec![driver_pkg("akmod-nvidia", None)];
+        let updates = SystemBackend::parse_pending_updates(CHECK_UPGRADE_FIXTURE, &installed).unwrap();
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn empty_upgrades_yields_no_updates() {
+        for empty in ["{}", r#"{"upgrades":[]}"#] {
+            let installed = vec![driver_pkg("akmod-nvidia", Some("1"))];
+            assert!(SystemBackend::parse_pending_updates(empty, &installed).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_check_upgrade_json_is_error() {
+        let installed = vec![driver_pkg("akmod-nvidia", Some("1"))];
+        assert!(SystemBackend::parse_pending_updates("not json", &installed).is_err());
     }
 }
