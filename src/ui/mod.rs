@@ -12,8 +12,10 @@ use std::rc::Rc;
 pub fn build_ui(app: &adw::Application) {
     // Single-instance reuse: grid/launcher activation can deliver `activate`
     // more than once (startup + forwarded from the second process). Never
-    // build a second window — present the existing one.
-    if let Some(window) = app.active_window() {
+    // build a second window — present the existing one. windows() covers
+    // presented-but-never-focused windows that active_window() misses.
+    let windows = app.windows();
+    if let Some(window) = windows.first() {
         window.present();
         return;
     }
