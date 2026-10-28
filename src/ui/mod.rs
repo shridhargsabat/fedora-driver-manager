@@ -278,6 +278,26 @@ fn refresh_data_async(
     });
 }
 
+/// Health-bucket counts for the overview subtitle: (optimal, actionable,
+/// unknown). Anything neither optimal nor actionable (Unknown,
+/// FirmwareUpdate, GenericFallback) lands in the third bucket so the
+/// subtitle always sums to the device total.
+fn health_counts(devices: &[HardwareDevice]) -> (usize, usize, usize) {
+    let optimal = devices.iter().filter(|d| d.status == DriverStatus::Optimal).count();
+    let actionable = devices
+        .iter()
+        .filter(|d| matches!(d.status, DriverStatus::Upgradable | DriverStatus::Missing))
+        .count();
+    let unknown = devices.len() - optimal - actionable;
+    (optimal, actionable, unknown)
+}
+
+/// Overview health subtitle, e.g. "23 optimal, 0 actionable, 2 unknown".
+/// `suffix` carries scan caveats such as " (partial scan failure)".
+fn health_subtitle(optimal: usize, actionable: usize, unknown: usize, suffix: &str) -> String {
+    format!("{optimal} optimal, {actionable} actionable, {unknown} unknown{suffix}")
+}
+
 fn render_data(
     stack: &gtk4::Stack,
     devices_state: &Rc<RefCell<Vec<HardwareDevice>>>,
@@ -343,8 +363,7 @@ fn render_data(
         .title("Driver Health Status")
         .build();
 
-    let optimal_count = scanned.iter().filter(|d| d.status == DriverStatus::Optimal).count();
-    let action_count = scanned.iter().filter(|d| d.status == DriverStatus::Upgradable || d.status == DriverStatus::Missing).count();
+    let (optimal_count, action_count, unknown_count) = health_counts(&scanned);
 
     let (health_title, health_subtitle, health_icon_name) = if scanned.is_empty() {
         // A 0-device scan (missing lspci/lsusb, empty output) means we know
@@ -364,7 +383,7 @@ fn render_data(
     } else if action_count == 0 && scan_errors.is_empty() && scan_warnings.is_empty() {
         (
             "All devices operating optimally".to_string(),
-            format!("{optimal_count} optimal, {action_count} actionable"),
+            health_subtitle(optimal_count, action_count, unknown_count, ""),
             "emblem-ok-symbolic",
         )
     } else {
@@ -384,7 +403,7 @@ fn render_data(
         };
         (
             "Updates or attention recommended".to_string(),
-            format!("{optimal_count} optimal, {action_count} actionable{suffix}"),
+            health_subtitle(optimal_count, action_count, unknown_count, &suffix),
             "dialog-warning-symbolic",
         )
     };
@@ -739,4 +758,49 @@ fn wrap_in_scrolled(widget: impl IsA<gtk4::Widget>) -> ScrolledWindow {
         .vscrollbar_policy(PolicyType::Automatic)
         .child(&widget)
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device_with_status(id: &str, status: DriverStatus) -> HardwareDevice {
+        HardwareDevice {
+            id: id.to_string(),
+            name: format!("Test device {id}"),
+            vendor: "Test Vendor".to_string(),
+            vendor_id: "1234".to_string(),
+            device_id: "5678".to_string(),
+            subsystem: None,
+            category: DeviceCategory::Other,
+            current_driver: None,
+            available_modules: Vec::new(),
+            status,
+            recommendation: None,
+            package_candidate: None,
+        }
+    }
+
+    #[test]
+    fn health_subtitle_includes_unknown_count() {
+        let devices = vec![
+            device_with_status("a", DriverStatus::Optimal),
+            device_with_status("b", DriverStatus::Missing),
+            device_with_status("c", DriverStatus::Unknown),
+        ];
+        let (optimal, actionable, unknown) = health_counts(&devices);
+        assert_eq!((optimal, actionable, unknown), (1, 1, 1));
+        assert_eq!(
+            health_subtitle(optimal, actionable, unknown, ""),
+            "1 optimal, 1 actionable, 1 unknown"
+        );
+    }
+
+    #[test]
+    fn health_subtitle_keeps_suffix_after_unknown() {
+        assert_eq!(
+            health_subtitle(23, 0, 2, " (partial scan failure)"),
+            "23 optimal, 0 actionable, 2 unknown (partial scan failure)"
+        );
+    }
 }
