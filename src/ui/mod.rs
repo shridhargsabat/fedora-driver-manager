@@ -1,5 +1,5 @@
 use crate::backend::hardware::{HardwareScanner, ScanReport};
-use crate::backend::system::SystemBackend;
+use crate::backend::system::{RootAction, SystemBackend};
 use crate::models::{DeviceCategory, DnfTransaction, DriverStatus, FirmwareItem, HardwareDevice};
 use adw::prelude::*;
 use adw::{ActionRow, ExpanderRow, HeaderBar, NavigationPage, NavigationSplitView, PreferencesGroup, PreferencesPage, Toast, ToastOverlay, WindowTitle};
@@ -500,14 +500,7 @@ fn render_data(
                         let toast = toast.clone();
                         glib::spawn_future_local(async move {
                             toast.add_toast(Toast::new(&format!("Requesting pkexec to undo transaction #{}...", tx_id)));
-                            let res = SystemBackend::execute_pkexec_async(vec![
-                                "dnf5".to_string(),
-                                "history".to_string(),
-                                "undo".to_string(),
-                                "-y".to_string(),
-                                tx_id.to_string(),
-                            ])
-                            .await;
+                            let res = SystemBackend::execute_root_async(RootAction::history_undo(tx_id)).await;
                             match res {
                                 Ok(_) => toast.add_toast(Toast::new(&format!("Transaction #{} undone successfully", tx_id))),
                                 Err(e) => toast.add_toast(Toast::new(&format!("Undo failed: {}", e))),
@@ -658,20 +651,22 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
                 if response == "install" {
                     let toast = toast_c.clone();
                     let p = p.clone();
-                    glib::spawn_future_local(async move {
-                        toast.add_toast(Toast::new(&format!("Running dnf5 install for {}...", p)));
-                        let res = SystemBackend::execute_pkexec_async(vec![
-                            "dnf5".to_string(),
-                            "install".to_string(),
-                            "-y".to_string(),
-                            p.clone(),
-                        ])
-                        .await;
-                        match res {
-                            Ok(_) => toast.add_toast(Toast::new(&format!("{} installed successfully!", p))),
-                            Err(e) => toast.add_toast(Toast::new(&format!("Failed: {}", e))),
+                    // Validate before pkexec: malicious names never reach root.
+                    match RootAction::dnf_install(&p) {
+                        Ok(action) => {
+                            glib::spawn_future_local(async move {
+                                toast.add_toast(Toast::new(&format!("Running dnf5 install for {}...", p)));
+                                let res = SystemBackend::execute_root_async(action).await;
+                                match res {
+                                    Ok(_) => toast.add_toast(Toast::new(&format!("{} installed successfully!", p))),
+                                    Err(e) => toast.add_toast(Toast::new(&format!("Failed: {}", e))),
+                                }
+                            });
                         }
-                    });
+                        Err(e) => {
+                            toast.add_toast(Toast::new(&format!("Refusing to install '{}': {}", p, e)));
+                        }
+                    }
                 }
             });
             dialog.present();

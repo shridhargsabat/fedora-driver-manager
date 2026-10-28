@@ -135,25 +135,78 @@ impl SystemBackend {
             })
             .collect())
     }
+}
 
-    /// Async variant of [`Self::execute_pkexec`] that runs the blocking pkexec
+/// Privileged operations allowed to run as root via pkexec. The closed set
+/// of variants (plus package-name validation) guarantees only known argv
+/// shapes can ever reach `/usr/bin/pkexec`.
+#[derive(Debug, Clone)]
+pub enum RootAction {
+    DnfInstall { package: String },
+    HistoryUndo { id: u64 },
+}
+
+impl RootAction {
+    /// `dnf5 install -y <package>`, rejecting anything that is not a plain
+    /// package name (`^[A-Za-z0-9][A-Za-z0-9.+_-]*$`) before pkexec is reached.
+    pub fn dnf_install(package: &str) -> Result<Self> {
+        if valid_package_name(package) {
+            Ok(Self::DnfInstall {
+                package: package.to_string(),
+            })
+        } else {
+            anyhow::bail!("invalid package name: {package:?}")
+        }
+    }
+
+    pub fn history_undo(id: u64) -> Self {
+        Self::HistoryUndo { id }
+    }
+
+    /// Exact argv (after pkexec) for this action.
+    fn argv(&self) -> Vec<String> {
+        match self {
+            Self::DnfInstall { package } => {
+                vec!["dnf5".to_string(), "install".to_string(), "-y".to_string(), package.clone()]
+            }
+            Self::HistoryUndo { id } => vec![
+                "dnf5".to_string(),
+                "history".to_string(),
+                "undo".to_string(),
+                "-y".to_string(),
+                id.to_string(),
+            ],
+        }
+    }
+}
+
+/// Plain package names only: first char alphanumeric, the rest
+/// alphanumeric or `.+_-`. Equivalent to
+/// `^[A-Za-z0-9][A-Za-z0-9.+_-]*$` without regex overhead.
+fn valid_package_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-' | '_'))
+}
+
+impl SystemBackend {
+    /// Async variant of [`Self::execute_root`] that runs the blocking pkexec
     /// subprocess on a worker thread, keeping the GTK main thread responsive.
     /// Callers still `await` it from the main thread, so result toasts behave
     /// exactly as before.
-    pub async fn execute_pkexec_async(args: Vec<String>) -> Result<String> {
-        gio::spawn_blocking(move || {
-            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            Self::execute_pkexec(&refs)
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("pkexec background task did not complete"))?
+    pub async fn execute_root_async(action: RootAction) -> Result<String> {
+        gio::spawn_blocking(move || Self::execute_root(&action))
+            .await
+            .map_err(|_| anyhow::anyhow!("pkexec background task did not complete"))?
     }
 
-    pub fn execute_pkexec(args: &[&str]) -> Result<String> {
+    /// Run a validated [`RootAction`] as root via absolute-path pkexec.
+    pub fn execute_root(action: &RootAction) -> Result<String> {
         // Absolute path: never resolve a setuid-root helper via PATH.
-        let output = Command::new("/usr/bin/pkexec")
-            .args(args)
-            .output()?;
+        let output = Command::new("/usr/bin/pkexec").args(action.argv()).output()?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -441,5 +494,55 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[1].name, "NVMe SSD");
         assert_eq!(items[1].vendor, "Unknown Vendor");
+    }
+
+    #[test]
+    fn legitimate_package_names_validate() {
+        for name in [
+            "akmod-nvidia",
+            "broadcom-wl",
+            "libva-intel-media-driver",
+            "foo",
+            "a",
+            "0ad",
+            "x264-libs",
+            "gtk4-devel",
+            "foo.bar_baz+qux-1",
+        ] {
+            assert!(RootAction::dnf_install(name).is_ok(), "{name} should validate");
+        }
+    }
+
+    #[test]
+    fn malicious_package_names_are_rejected() {
+        for name in [
+            "foo;rm",
+            "../../../x",
+            "a b",
+            "",
+            "-foo",
+            ".foo",
+            "foo/bar",
+            "foo$bar",
+            "foo`id`",
+            "foo\nbar",
+            "foo|tee",
+            "foo&",
+            "foo=bar",
+        ] {
+            assert!(RootAction::dnf_install(name).is_err(), "{name:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn root_action_argv_shapes_are_fixed() {
+        assert_eq!(
+            RootAction::dnf_install("akmod-nvidia").expect("valid").argv(),
+            ["dnf5", "install", "-y", "akmod-nvidia"]
+        );
+        assert_eq!(
+            RootAction::history_undo(66).argv(),
+            ["dnf5", "history", "undo", "-y", "66"]
+        );
     }
 }
