@@ -113,6 +113,25 @@ impl SystemBackend {
         Self::parse_dnf_history_json(&String::from_utf8_lossy(&output.stdout), limit)
     }
 
+    /// Resolve driver candidate packages against the enabled dnf repos in
+    /// ONE `dnf5 info --json` call. Names are validated with
+    /// `valid_package_name` before shelling out (defense in depth: callers
+    /// only pass hardcoded candidates). Unknown packages yield empty
+    /// entries (see `parse_dnf_info_json`); only real dnf failures are Err.
+    pub fn get_driver_packages(names: &[&str]) -> Result<Vec<DriverPackage>> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        for name in names {
+            if !valid_package_name(name) {
+                anyhow::bail!("invalid package name: {name:?}");
+            }
+        }
+        let output = Command::new("/usr/bin/dnf5").args(["info", "--json"]).args(names).output()?;
+        Self::ensure_command_success("dnf5", &output)?;
+        Self::parse_dnf_info_json(&String::from_utf8_lossy(&output.stdout), names)
+    }
+
     /// Parse `dnf5 history list --json` output (newest transaction first).
     /// Whitespace-splitting the human-readable table corrupted fields, so the
     /// structured form is the source of truth for id, command line and date.
@@ -692,5 +711,17 @@ mod tests {
     #[test]
     fn invalid_json_is_error() {
         assert!(SystemBackend::parse_dnf_info_json("not json", &["x"]).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_package_names_before_shelling_out() {
+        // Must fail validation without spawning dnf5 (name could never be valid).
+        let err = SystemBackend::get_driver_packages(&["foo;rm -rf /"]).unwrap_err();
+        assert!(format!("{err:#}").contains("invalid package name"));
+    }
+
+    #[test]
+    fn empty_request_returns_empty_without_shelling_out() {
+        assert!(SystemBackend::get_driver_packages(&[]).unwrap().is_empty());
     }
 }
