@@ -1,6 +1,6 @@
 use crate::backend::hardware::{HardwareScanner, ScanReport};
 use crate::backend::system::{RootAction, SystemBackend};
-use crate::models::{DeviceCategory, DnfTransaction, DriverStatus, FirmwareItem, HardwareDevice};
+use crate::models::{DeviceCategory, DnfTransaction, DriverPackage, DriverStatus, FirmwareItem, HardwareDevice};
 use adw::prelude::*;
 use adw::{ActionRow, ExpanderRow, HeaderBar, NavigationPage, NavigationSplitView, PreferencesGroup, PreferencesPage, Toast, ToastOverlay, WindowTitle};
 use gtk4::prelude::{IsA, WidgetExt};
@@ -60,6 +60,7 @@ pub fn build_ui(app: &adw::Application) {
         ("other", "Other / System Devices", "preferences-system-devices-symbolic"),
         ("firmware", "Firmware Updates", "software-update-available-symbolic"),
         ("history", "History and Rollback", "document-revert-symbolic"),
+        ("drivers", "Available Drivers", "package-x-generic-symbolic"),
     ];
 
     for (id, label, icon) in &categories {
@@ -163,6 +164,7 @@ pub fn build_ui(app: &adw::Application) {
                 "other" => header_title_clone.set_title("Other / System Devices"),
                 "firmware" => header_title_clone.set_title("Firmware Updates"),
                 "history" => header_title_clone.set_title("History and Rollback"),
+                "drivers" => header_title_clone.set_title("Available Drivers"),
                 _ => header_title_clone.set_title("Hardware Details"),
             }
         }
@@ -214,6 +216,7 @@ pub fn build_ui(app: &adw::Application) {
 /// errors travel as pre-rendered strings.
 struct ScanResults {
     report: ScanReport,
+    driver_packages: Result<Vec<DriverPackage>, String>,
     firmware: Result<Vec<FirmwareItem>, String>,
     history: Result<Vec<DnfTransaction>, String>,
     laptop_model: String,
@@ -222,8 +225,14 @@ struct ScanResults {
 
 impl ScanResults {
     fn collect() -> Self {
+        let report = HardwareScanner::scan_all_report();
+        let candidates = HardwareScanner::collect_package_candidates(&report.devices);
+        let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+        let driver_packages =
+            SystemBackend::get_driver_packages(&candidate_refs).map_err(|e| format!("{e:#}"));
         Self {
-            report: HardwareScanner::scan_all_report(),
+            report,
+            driver_packages,
             firmware: SystemBackend::get_firmware_devices().map_err(|e| format!("{e:#}")),
             history: SystemBackend::get_dnf_history(10).map_err(|e| format!("{e:#}")),
             laptop_model: SystemBackend::get_laptop_model(),
@@ -259,8 +268,10 @@ fn refresh_data_async(
         };
         // Gate the success toast on a genuinely clean scan: every failure
         // path already produced its own error toast in render_data.
-        let clean =
-            results.report.errors().is_empty() && results.firmware.is_ok() && results.history.is_ok();
+        let clean = results.report.errors().is_empty()
+            && results.firmware.is_ok()
+            && results.history.is_ok()
+            && results.driver_packages.is_ok();
         render_data(&stack, &devices_state, &toast_overlay, results);
         // Rebuilds reset the stack to its first child: restore whatever page
         // the sidebar has selected (also covers clicks made mid-scan).
@@ -296,6 +307,15 @@ fn health_counts(devices: &[HardwareDevice]) -> (usize, usize, usize) {
 /// `suffix` carries scan caveats such as " (partial scan failure)".
 fn health_subtitle(optimal: usize, actionable: usize, unknown: usize, suffix: &str) -> String {
     format!("{optimal} optimal, {actionable} actionable, {unknown} unknown{suffix}")
+}
+
+/// Where to get a package that is in no enabled repo. Only packages the
+/// app itself recommends are listed — anything else yields None.
+fn repo_hint(package: &str) -> Option<&'static str> {
+    match package {
+        "akmod-nvidia" | "broadcom-wl" => Some("Requires the RPM Fusion repositories"),
+        _ => None,
+    }
 }
 
 fn render_data(
@@ -601,6 +621,8 @@ fn render_data(
     }
     hist_page.add(&hist_group);
     stack.add_named(&wrap_in_scrolled(hist_page), Some("history"));
+
+    add_drivers_page(stack, &results.driver_packages, toast_overlay);
 }
 
 fn add_category_page(
@@ -633,6 +655,64 @@ fn add_category_page(
 
     page.add(&group);
     stack.add_named(&wrap_in_scrolled(page), Some(name));
+}
+
+/// "Available Drivers" page: one row per candidate package with its
+/// installed/available state from the enabled dnf repos, plus an Install
+/// button when there is something installable. Mirrors the firmware
+/// page structure (PreferencesPage -> PreferencesGroup -> rows).
+fn add_drivers_page(
+    stack: &gtk4::Stack,
+    packages: &Result<Vec<DriverPackage>, String>,
+    toast_overlay: &Rc<ToastOverlay>,
+) {
+    let page = PreferencesPage::new();
+    let group = PreferencesGroup::builder()
+        .title("Official driver packages")
+        .description("Versions from your enabled repositories")
+        .build();
+    match packages {
+        Err(err) => {
+            let row = ActionRow::builder()
+                .title("Could not query repositories")
+                .subtitle(err.as_str())
+                .build();
+            row.add_prefix(&Image::from_icon_name("dialog-error-symbolic"));
+            group.add(&row);
+            toast_overlay.add_toast(Toast::new(&format!("Driver query failed: {err}")));
+        }
+        Ok(list) if list.is_empty() => {
+            let row = ActionRow::builder()
+                .title("No driver packages suggested")
+                .subtitle("No detected device maps to an installable package")
+                .build();
+            group.add(&row);
+        }
+        Ok(list) => {
+            for pkg in list {
+                // Parser/dnf-derived strings: never markup (file convention).
+                let row = ActionRow::builder()
+                    .title(pkg.name.as_str())
+                    .subtitle(pkg.status_text().as_str())
+                    .use_markup(false)
+                    .build();
+                row.add_prefix(&Image::from_icon_name("package-x-generic-symbolic"));
+                if pkg.installed_evr.is_some() {
+                    row.add_suffix(&Image::from_icon_name("emblem-ok-symbolic"));
+                } else if pkg.preferred_available().is_some() {
+                    row.add_suffix(&make_install_button(&pkg.name, toast_overlay));
+                } else if let Some(hint) = repo_hint(&pkg.name) {
+                    let hint_row = ActionRow::builder().title(hint).build();
+                    group.add(&row);
+                    group.add(&hint_row);
+                    continue;
+                }
+                group.add(&row);
+            }
+        }
+    }
+    page.add(&group);
+    stack.add_named(&wrap_in_scrolled(page), Some("drivers"));
 }
 
 fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> ExpanderRow {
@@ -809,5 +889,17 @@ mod tests {
             health_subtitle(23, 0, 2, " (partial scan failure)"),
             "23 optimal, 0 actionable, 2 unknown (partial scan failure)"
         );
+    }
+
+    #[test]
+    fn rpm_fusion_packages_get_repo_hint() {
+        assert_eq!(repo_hint("akmod-nvidia"), Some("Requires the RPM Fusion repositories"));
+        assert_eq!(repo_hint("broadcom-wl"), Some("Requires the RPM Fusion repositories"));
+    }
+
+    #[test]
+    fn official_packages_get_no_hint() {
+        assert_eq!(repo_hint("libva-intel-media-driver"), None);
+        assert_eq!(repo_hint("something-else"), None);
     }
 }
