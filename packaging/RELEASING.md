@@ -15,3 +15,9 @@
    `-x.y.z-` name. Verify gtk4+libadwaita present.
 6. Fresh SRPM (`rpmbuild -bs`), `copr-cli build` (f44 + rawhide),
    watch to green, `dnf upgrade`, `rpm -V` clean.
+
+## Updater notes
+
+- No release-step changes: update detection is computed live from dnf/fwupd.
+- The auto-check timer only runs while the app runs; there is deliberately
+  no systemd background service in this iteration.

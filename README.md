@@ -19,6 +19,11 @@ A modern, native hardware driver, firmware, and rollback manager for **Fedora Wo
 - **Available Drivers page**:
   - Shows every suggested driver package with its installed and officially available versions, including which repository provides it.
   - One-click install of any available (not yet installed) package, with confirmation.
+- **Updater**:
+  - Sidebar Updates page lists pending driver upgrades and firmware updates.
+  - Install in place, or download RPMs to Downloads for later.
+  - Optional automatic checks while the app runs with desktop notifications
+    (header menu toggle; settings in `~/.config/driver-manager/updater.json`).
 - **Firmware Management via `fwupd`**:
   - Live inspection of hardware firmware (BIOS, Intel ME, SSDs, TPM, Cameras).
   - Flags components with updatable firmware.
