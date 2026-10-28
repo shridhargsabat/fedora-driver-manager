@@ -1,4 +1,4 @@
-use crate::models::{DnfTransaction, FirmwareItem};
+use crate::models::{DnfTransaction, DriverPackage, FirmwareItem, PackageBuild};
 use anyhow::Result;
 use std::process::Command;
 
@@ -135,6 +135,39 @@ impl SystemBackend {
             })
             .collect())
     }
+
+    /// Parse `dnf5 info --json` output for exactly the requested `names`
+    /// (in order). Names absent from the JSON yield entries with no
+    /// installed EVR and no builds — "not in enabled repositories" — not
+    /// an error, since exit status is 0 even for unknown packages.
+    fn parse_dnf_info_json(stdout: &str, names: &[&str]) -> Result<Vec<DriverPackage>> {
+        let output: DnfInfoOutput = serde_json::from_str(stdout)?;
+        Ok(names
+            .iter()
+            .map(|name| {
+                let installed_evr = output
+                    .installed_packages
+                    .iter()
+                    .find(|p| p.name == **name)
+                    .map(|p| p.evr.clone());
+                let available = output
+                    .available_packages
+                    .iter()
+                    .filter(|p| p.name == **name)
+                    .map(|p| PackageBuild {
+                        evr: p.evr.clone(),
+                        arch: p.arch.clone(),
+                        repo: p.repository.clone(),
+                    })
+                    .collect();
+                DriverPackage {
+                    name: name.to_string(),
+                    installed_evr,
+                    available,
+                }
+            })
+            .collect())
+    }
 }
 
 /// Privileged operations allowed to run as root via pkexec. The closed set
@@ -240,6 +273,22 @@ struct DnfHistoryEntry {
     command_line: Option<String>,
     #[serde(default)]
     start_time: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct DnfInfoEntry {
+    name: String,
+    arch: String,
+    evr: String,
+    repository: String,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct DnfInfoOutput {
+    #[serde(default)]
+    installed_packages: Vec<DnfInfoEntry>,
+    #[serde(default)]
+    available_packages: Vec<DnfInfoEntry>,
 }
 
 /// Derive a short action label ("install", "remove", ...) from a full
@@ -595,5 +644,53 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("pkexec"), "missing tool name: {msg}");
         assert!(msg.contains("127"), "missing exit code: {msg}");
+    }
+
+    const DNF_INFO_INSTALLED: &str = r#"{
+  "installed_packages":[
+    {"name":"libva-intel-media-driver","arch":"x86_64","evr":"26.3.5-1.fc44","repository":"updates"}
+  ],
+  "available_packages":[
+    {"name":"libva-intel-media-driver","arch":"i686","evr":"26.3.5-1.fc44","repository":"updates"}
+  ]
+}"#;
+
+    const DNF_INFO_AVAILABLE_ONLY: &str = r#"{
+  "available_packages":[
+    {"name":"akmod-nvidia","arch":"x86_64","evr":"3:615.71.09-3.fc44","repository":"rpmfusion-nonfree-nvidia-driver"}
+  ]
+}"#;
+
+    const DNF_INFO_EMPTY: &str = "{}";
+
+    #[test]
+    fn parses_installed_and_available_entries() {
+        let pkgs = SystemBackend::parse_dnf_info_json(DNF_INFO_INSTALLED, &["libva-intel-media-driver"]).unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "libva-intel-media-driver");
+        assert_eq!(pkgs[0].installed_evr.as_deref(), Some("26.3.5-1.fc44"));
+        assert_eq!(pkgs[0].available.len(), 1);
+        assert_eq!(pkgs[0].available[0].arch, "i686");
+    }
+
+    #[test]
+    fn parses_available_only_entry() {
+        let pkgs = SystemBackend::parse_dnf_info_json(DNF_INFO_AVAILABLE_ONLY, &["akmod-nvidia"]).unwrap();
+        assert_eq!(pkgs[0].installed_evr, None);
+        assert_eq!(pkgs[0].preferred_available().unwrap().repo, "rpmfusion-nonfree-nvidia-driver");
+    }
+
+    #[test]
+    fn missing_package_yields_empty_entry_not_error() {
+        let pkgs = SystemBackend::parse_dnf_info_json(DNF_INFO_EMPTY, &["broadcom-wl"]).unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "broadcom-wl");
+        assert_eq!(pkgs[0].installed_evr, None);
+        assert!(pkgs[0].available.is_empty());
+    }
+
+    #[test]
+    fn invalid_json_is_error() {
+        assert!(SystemBackend::parse_dnf_info_json("not json", &["x"]).is_err());
     }
 }
