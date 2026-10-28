@@ -12,6 +12,10 @@
       the right driver packages for Fedora Workstation.
     </p>
     <p>
+      The Available Drivers page lists officially packaged drivers for your
+      hardware with their repository versions, and installs them on demand.
+    </p>
+    <p>
       It also surfaces firmware updates via fwupd, reports Secure Boot status,
       and lets you review and roll back recent software transactions safely.
     </p>
