@@ -746,29 +746,35 @@ fn show_whatsnew_dialog(parent: &adw::ApplicationWindow) {
         page.add(&group);
         dialog.add(&page);
     } else {
+        let page = PreferencesPage::builder().title("Release notes").build();
+        let group = PreferencesGroup::builder().title("Release notes").build();
         for rel in &notes {
-            let title = if rel.version == current {
+            let is_current = rel.version == current;
+            let title = if is_current {
                 format!("{} ({}) — this version", rel.version, rel.date)
             } else {
                 format!("{} ({})", rel.version, rel.date)
             };
-            let page = PreferencesPage::builder().title(title.as_str()).build();
-            let group = PreferencesGroup::builder().title(title.as_str()).build();
+            let expander = ExpanderRow::builder()
+                .title(title.as_str())
+                .expanded(is_current)
+                .build();
             if rel.bullets.is_empty() {
-                group.add(&ActionRow::builder().title("No details recorded").build());
+                expander.add_row(&ActionRow::builder().title("No details recorded").build());
             }
             for bullet in &rel.bullets {
                 // Changelog-derived strings: never markup (file convention).
-                group.add(
+                expander.add_row(
                     &ActionRow::builder()
                         .title(bullet.as_str())
                         .use_markup(false)
                         .build(),
                 );
             }
-            page.add(&group);
-            dialog.add(&page);
+            group.add(&expander);
         }
+        page.add(&group);
+        dialog.add(&page);
     }
     dialog.present(Some(parent));
 }
