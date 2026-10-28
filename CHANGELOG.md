@@ -3,6 +3,11 @@
 All notable changes to Driver Manager. Format: `## [version] - date`
 followed by `- bullet` lines (parsed by the in-app What's New page).
 
+## [0.2.0] - 2026-10-28
+
+- New Available Drivers page: installed/available repo versions with one-click install
+- New What's New page: current release notes plus full history
+
 ## [0.1.4] - 2026-10-28
 
 - Security: root dnf5 commands pinned to absolute /usr/bin/dnf5 (no PATH resolution as root)

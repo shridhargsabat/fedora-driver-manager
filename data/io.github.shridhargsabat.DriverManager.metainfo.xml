@@ -55,6 +55,7 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.2.0" date="2026-10-28"><description><p>New Available Drivers and What's New pages.</p></description></release>
     <release version="0.1.4" date="2026-10-28">
       <description><p>Security hardening and honest error states.</p></description>
     </release>
