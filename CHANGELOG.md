@@ -3,6 +3,11 @@
 All notable changes to Driver Manager. Format: `## [version] - date`
 followed by `- bullet` lines (parsed by the in-app What's New page).
 
+## [0.2.1] - 2026-10-28
+
+- What's New moved from sidebar to header menu dialog (next to About)
+- New Reinstall button for installed driver packages (repair via dnf5 reinstall)
+
 ## [0.2.0] - 2026-10-28
 
 - New Available Drivers page: installed/available repo versions with one-click install
