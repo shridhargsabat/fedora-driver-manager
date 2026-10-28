@@ -3,6 +3,12 @@
 All notable changes to Driver Manager. Format: `## [version] - date`
 followed by `- bullet` lines (parsed by the in-app What's New page).
 
+## [0.3.0] - 2026-10-28
+
+- New Updates page: pending driver upgrades with Install and Download-only options
+- Automatic update checks with desktop notifications (header menu toggle)
+- What's New dialog uses expandable release rows
+
 ## [0.2.1] - 2026-10-28
 
 - What's New moved from sidebar to header menu dialog (next to About)
