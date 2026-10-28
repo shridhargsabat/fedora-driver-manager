@@ -3,7 +3,7 @@ use crate::backend::system::SystemBackend;
 use crate::models::{DeviceCategory, DriverStatus, HardwareDevice};
 use adw::prelude::*;
 use adw::{ActionRow, ExpanderRow, HeaderBar, NavigationPage, NavigationSplitView, PreferencesGroup, PreferencesPage, Toast, ToastOverlay, WindowTitle};
-use gtk4::prelude::IsA;
+use gtk4::prelude::{IsA, WidgetExt};
 use gtk4::{Align, Box, Button, Image, Label, Orientation, PolicyType, ScrolledWindow};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -153,6 +153,13 @@ fn refresh_data(
 ) {
     let scanned = HardwareScanner::scan_all().unwrap_or_default();
     *devices_state.borrow_mut() = scanned.clone();
+
+    // Drop existing stack pages first: re-adding the same child names is
+    // rejected by GtkStack ("Duplicate child name"), which made Refresh a
+    // silent no-op. Clear everything, then rebuild below.
+    while let Some(child) = stack.first_child() {
+        stack.remove(&child);
+    }
 
     // 1. Overview Page
     let overview_page = PreferencesPage::new();
