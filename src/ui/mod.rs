@@ -4,6 +4,7 @@ use crate::models::{DeviceCategory, DnfTransaction, DriverStatus, FirmwareItem, 
 use adw::prelude::*;
 use adw::{ActionRow, ExpanderRow, HeaderBar, NavigationPage, NavigationSplitView, PreferencesGroup, PreferencesPage, Toast, ToastOverlay, WindowTitle};
 use gtk4::prelude::{IsA, WidgetExt};
+use gio::prelude::ActionMapExt;
 use gtk4::{Align, Box, Button, Image, Label, Orientation, PolicyType, ScrolledWindow, Spinner};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -99,6 +100,15 @@ pub fn build_ui(app: &adw::Application) {
     let spinner = Spinner::new();
     spinner.set_tooltip_text(Some("Scanning hardware…"));
     content_header.pack_end(&spinner);
+
+    let menu_btn = gtk4::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Main Menu")
+        .build();
+    let menu = gio::Menu::new();
+    menu.append(Some("About Driver Manager"), Some("win.about"));
+    menu_btn.set_menu_model(Some(&menu));
+    content_header.pack_end(&menu_btn);
     content_box.append(&content_header);
 
     let stack = gtk4::Stack::builder()
@@ -174,6 +184,25 @@ pub fn build_ui(app: &adw::Application) {
             true,
         );
     });
+
+    // About action (window-scoped): shows app version, developer, license.
+    let about_action = gio::SimpleAction::new("about", None);
+    {
+        let window_clone = window.clone();
+        about_action.connect_activate(move |_, _| {
+            let dialog = adw::AboutDialog::builder()
+                .application_name("Driver Manager")
+                .application_icon("io.github.shridhargsabat.DriverManager")
+                .developer_name("Shridhar Sabat")
+                .version(env!("CARGO_PKG_VERSION"))
+                .website("https://github.com/shridhargsabat/fedora-driver-manager")
+                .issue_url("https://github.com/shridhargsabat/fedora-driver-manager/issues")
+                .license_type(gtk4::License::Gpl30)
+                .build();
+            dialog.present(Some(&window_clone));
+        });
+    }
+    window.add_action(&about_action);
 
     window.present();
 }
