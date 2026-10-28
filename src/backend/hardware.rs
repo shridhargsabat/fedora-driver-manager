@@ -52,6 +52,15 @@ pub struct ParseOutcome {
 }
 
 impl HardwareScanner {
+    /// Distinct, sorted package names from all devices' `package_candidate`s.
+    /// Feeds the single batched `dnf5 info --json` call in `ScanResults::collect`.
+    pub fn collect_package_candidates(devices: &[HardwareDevice]) -> Vec<String> {
+        let mut names: Vec<String> = devices.iter().filter_map(|d| d.package_candidate.clone()).collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// Scan every backend independently, collecting each backend's devices
     /// or error without letting one failure abort the others.
     pub fn scan_all_report() -> ScanReport {
@@ -783,5 +792,36 @@ mod tests {
         let outcome = HardwareScanner::scan_usb_output(&out).expect("genuine empty must be Ok");
         assert!(outcome.devices.is_empty());
         assert!(outcome.warning.is_none());
+    }
+
+    fn device_with_candidate(candidate: Option<&str>) -> HardwareDevice {
+        HardwareDevice {
+            id: "00:00.0".to_string(),
+            name: "Test".to_string(),
+            vendor: "Test".to_string(),
+            vendor_id: "8086".to_string(),
+            device_id: "0000".to_string(),
+            subsystem: None,
+            category: DeviceCategory::Gpu,
+            current_driver: None,
+            available_modules: Vec::new(),
+            status: DriverStatus::Missing,
+            recommendation: None,
+            package_candidate: candidate.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn collects_distinct_sorted_candidates() {
+        let devices = vec![
+            device_with_candidate(Some("broadcom-wl")),
+            device_with_candidate(None),
+            device_with_candidate(Some("akmod-nvidia")),
+            device_with_candidate(Some("akmod-nvidia")),
+        ];
+        assert_eq!(
+            HardwareScanner::collect_package_candidates(&devices),
+            vec!["akmod-nvidia".to_string(), "broadcom-wl".to_string()]
+        );
     }
 }

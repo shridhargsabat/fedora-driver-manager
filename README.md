@@ -16,6 +16,9 @@ A modern, native hardware driver, firmware, and rollback manager for **Fedora Wo
   - Intel UHD / Iris graphics media acceleration driver suggestions (`libva-intel-media-driver`).
   - NVIDIA discrete GPU detection with direct links to RPM Fusion's `akmod-nvidia`.
   - Broadcom and Realtek wireless card proprietary module detection.
+- **Available Drivers page**:
+  - Shows every suggested driver package with its installed and officially available versions, including which repository provides it.
+  - One-click install of any available (not yet installed) package, with confirmation.
 - **Firmware Management via `fwupd`**:
   - Live inspection of hardware firmware (BIOS, Intel ME, SSDs, TPM, Cameras).
   - Flags components with updatable firmware.
