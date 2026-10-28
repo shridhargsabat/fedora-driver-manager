@@ -1,6 +1,6 @@
 use crate::backend::hardware::{HardwareScanner, ScanReport};
 use crate::backend::system::{RootAction, SystemBackend};
-use crate::models::{DeviceCategory, DnfTransaction, DriverPackage, DriverStatus, FirmwareItem, HardwareDevice};
+use crate::models::{DeviceCategory, DnfTransaction, DriverPackage, DriverStatus, FirmwareItem, HardwareDevice, PackageUpdate};
 use adw::prelude::*;
 use adw::{ActionRow, ExpanderRow, HeaderBar, NavigationPage, NavigationSplitView, PreferencesGroup, PreferencesPage, Toast, ToastOverlay, WindowTitle};
 use gtk4::prelude::{IsA, WidgetExt};
@@ -228,6 +228,7 @@ pub fn build_ui(app: &adw::Application) {
 struct ScanResults {
     report: ScanReport,
     driver_packages: Result<Vec<DriverPackage>, String>,
+    pending_updates: Result<Vec<PackageUpdate>, String>,
     firmware: Result<Vec<FirmwareItem>, String>,
     history: Result<Vec<DnfTransaction>, String>,
     laptop_model: String,
@@ -241,9 +242,17 @@ impl ScanResults {
         let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
         let driver_packages =
             SystemBackend::get_driver_packages(&candidate_refs).map_err(|e| format!("{e:#}"));
+        let pending_updates = match &driver_packages {
+            Ok(pkgs) => {
+                let names: Vec<&str> = candidates.iter().map(String::as_str).collect();
+                SystemBackend::get_pending_updates(&names, pkgs).map_err(|e| format!("{e:#}"))
+            }
+            Err(e) => Err(format!("driver query failed: {e}")),
+        };
         Self {
             report,
             driver_packages,
+            pending_updates,
             firmware: SystemBackend::get_firmware_devices().map_err(|e| format!("{e:#}")),
             history: SystemBackend::get_dnf_history(10).map_err(|e| format!("{e:#}")),
             laptop_model: SystemBackend::get_laptop_model(),
@@ -282,7 +291,8 @@ fn refresh_data_async(
         let clean = results.report.errors().is_empty()
             && results.firmware.is_ok()
             && results.history.is_ok()
-            && results.driver_packages.is_ok();
+            && results.driver_packages.is_ok()
+            && results.pending_updates.is_ok();
         render_data(&stack, &devices_state, &toast_overlay, results);
         // Rebuilds reset the stack to its first child: restore whatever page
         // the sidebar has selected (also covers clicks made mid-scan).
@@ -312,6 +322,11 @@ fn health_counts(devices: &[HardwareDevice]) -> (usize, usize, usize) {
         .count();
     let unknown = devices.len() - optimal - actionable;
     (optimal, actionable, unknown)
+}
+
+/// Total pending updates: package upgrades + updatable firmware items.
+fn update_count(pkgs: &[PackageUpdate], firmware: &[FirmwareItem]) -> usize {
+    pkgs.len() + firmware.iter().filter(|f| f.updatable).count()
 }
 
 /// Overview health subtitle, e.g. "23 optimal, 0 actionable, 2 unknown".
@@ -985,5 +1000,18 @@ mod tests {
     fn official_packages_get_no_hint() {
         assert_eq!(repo_hint("libva-intel-media-driver"), None);
         assert_eq!(repo_hint("something-else"), None);
+    }
+
+    #[test]
+    fn update_count_sums_packages_and_firmware() {
+        let pkgs = vec![PackageUpdate {
+            name: "a".to_string(), arch: "x86_64".to_string(),
+            from_evr: "1".to_string(), to_evr: "2".to_string(), repo: "updates".to_string(),
+        }];
+        let fw = vec![
+            FirmwareItem { name: "BIOS".to_string(), vendor: "Intel".to_string(), version: "1".to_string(), updatable: true, summary: None },
+            FirmwareItem { name: "TPM".to_string(), vendor: "Intel".to_string(), version: "1".to_string(), updatable: false, summary: None },
+        ];
+        assert_eq!(update_count(&pkgs, &fw), 2);
     }
 }
