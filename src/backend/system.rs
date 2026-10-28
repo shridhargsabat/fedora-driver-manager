@@ -237,6 +237,42 @@ impl SystemBackend {
         Self::ensure_command_success("dnf5", &output)?;
         Self::parse_pending_updates(&String::from_utf8_lossy(&output.stdout), known)
     }
+
+    /// Download a package RPM without installing (unprivileged).
+    /// Returns the downloaded `.rpm` paths found in `dest_dir` afterwards.
+    /// `dest_dir` must exist (caller creates it); names validated like root ops.
+    pub fn download_package(name: &str, dest_dir: &std::path::Path) -> Result<Vec<String>> {
+        if !valid_package_name(name) {
+            anyhow::bail!("invalid package name: {name:?}");
+        }
+        if !dest_dir.is_dir() {
+            anyhow::bail!("download directory does not exist: {}", dest_dir.display());
+        }
+        let before = Self::rpms_in(dest_dir);
+        let output = Command::new("/usr/bin/dnf5")
+            .args(["download", "--destdir"])
+            .arg(dest_dir)
+            .arg(name)
+            .output()?;
+        Self::ensure_command_success("dnf5", &output)?;
+        let after = Self::rpms_in(dest_dir);
+        Ok(after.into_iter().filter(|p| !before.contains(p)).collect())
+    }
+
+    /// Sorted `.rpm` filenames (not full paths) currently in `dir`.
+    fn rpms_in(dir: &std::path::Path) -> Vec<String> {
+        let mut out: Vec<String> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".rpm").then_some(name)
+            })
+            .collect();
+        out.sort();
+        out
+    }
 }
 
 /// Privileged operations allowed to run as root via pkexec. The closed set
@@ -873,5 +909,19 @@ mod tests {
     fn invalid_check_upgrade_json_is_error() {
         let installed = vec![driver_pkg("akmod-nvidia", Some("1"))];
         assert!(SystemBackend::parse_pending_updates("not json", &installed).is_err());
+    }
+
+    #[test]
+    fn download_rejects_invalid_names_without_shelling_out() {
+        let dir = std::env::temp_dir();
+        let err = SystemBackend::download_package("foo;rm -rf /", &dir).unwrap_err();
+        assert!(format!("{err:#}").contains("invalid package name"));
+    }
+
+    #[test]
+    fn download_requires_existing_directory() {
+        let missing = std::env::temp_dir().join("driver-manager-no-such-dir-xyz");
+        let err = SystemBackend::download_package("akmod-nvidia", &missing).unwrap_err();
+        assert!(format!("{err:#}").contains("download directory"));
     }
 }
