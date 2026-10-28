@@ -135,7 +135,8 @@ impl SystemBackend {
     }
 
     pub fn execute_pkexec(args: &[&str]) -> Result<String> {
-        let output = Command::new("pkexec")
+        // Absolute path: never resolve a setuid-root helper via PATH.
+        let output = Command::new("/usr/bin/pkexec")
             .args(args)
             .output()?;
 
