@@ -20,7 +20,12 @@ echo "==> Installing PolicyKit action policy..."
 sudo install -Dm644 data/io.github.shridhargsabat.DriverManager.policy /usr/share/polkit-1/actions/io.github.shridhargsabat.DriverManager.policy
 
 echo "==> Installing D-Bus service file..."
-sudo install -Dm644 data/io.github.shridhargsabat.DriverManager.service /usr/local/share/dbus-1/services/io.github.shridhargsabat.DriverManager.service
+# The repo service file points at /usr/bin (RPM layout); script installs
+# land in /usr/local/bin, so rewrite Exec= or D-Bus activation fails.
+tmp_service="$(mktemp)"
+sed 's|^Exec=.*|Exec=/usr/local/bin/fedora-driver-manager|' data/io.github.shridhargsabat.DriverManager.service > "$tmp_service"
+sudo install -Dm644 "$tmp_service" /usr/local/share/dbus-1/services/io.github.shridhargsabat.DriverManager.service
+rm -f "$tmp_service"
 
 echo "==> Updating desktop database..."
 sudo update-desktop-database /usr/local/share/applications || true
