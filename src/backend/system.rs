@@ -163,14 +163,16 @@ impl RootAction {
         Self::HistoryUndo { id }
     }
 
-    /// Exact argv (after pkexec) for this action.
+    /// Exact argv (after pkexec) for this action. argv[0] is absolute:
+    /// pkexec executes it as root, so PATH resolution here would let a
+    /// planted `dnf5` run as root on user approval.
     fn argv(&self) -> Vec<String> {
         match self {
             Self::DnfInstall { package } => {
-                vec!["dnf5".to_string(), "install".to_string(), "-y".to_string(), package.clone()]
+                vec!["/usr/bin/dnf5".to_string(), "install".to_string(), "-y".to_string(), package.clone()]
             }
             Self::HistoryUndo { id } => vec![
-                "dnf5".to_string(),
+                "/usr/bin/dnf5".to_string(),
                 "history".to_string(),
                 "undo".to_string(),
                 "-y".to_string(),
@@ -538,11 +540,22 @@ mod tests {
     fn root_action_argv_shapes_are_fixed() {
         assert_eq!(
             RootAction::dnf_install("akmod-nvidia").expect("valid").argv(),
-            ["dnf5", "install", "-y", "akmod-nvidia"]
+            ["/usr/bin/dnf5", "install", "-y", "akmod-nvidia"]
         );
         assert_eq!(
             RootAction::history_undo(66).argv(),
-            ["dnf5", "history", "undo", "-y", "66"]
+            ["/usr/bin/dnf5", "history", "undo", "-y", "66"]
         );
+    }
+
+    /// pkexec runs argv[0] as root: it must be an absolute path so a
+    /// PATH-planted `dnf5` can never be hijacked on user approval.
+    #[test]
+    fn root_action_argv_uses_absolute_dnf5_path() {
+        assert_eq!(
+            RootAction::dnf_install("akmod-nvidia").expect("valid").argv()[0],
+            "/usr/bin/dnf5"
+        );
+        assert_eq!(RootAction::history_undo(66).argv()[0], "/usr/bin/dnf5");
     }
 }
