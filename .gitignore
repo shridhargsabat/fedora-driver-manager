@@ -1,0 +1,5 @@
+/target
+*.rpm
+*.srpm
+vendor/
+packaging/*.tar.gz
