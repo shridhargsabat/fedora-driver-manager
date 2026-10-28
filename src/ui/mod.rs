@@ -46,6 +46,7 @@ pub fn build_ui(app: &adw::Application) {
         ("audio", "Audio and Sound", "audio-card-symbolic"),
         ("storage", "Storage and NVMe", "drive-harddisk-symbolic"),
         ("peripherals", "Camera and Peripherals", "camera-web-symbolic"),
+        ("other", "Other / System Devices", "preferences-system-devices-symbolic"),
         ("firmware", "Firmware Updates", "software-update-available-symbolic"),
         ("history", "History and Rollback", "document-revert-symbolic"),
     ];
@@ -127,6 +128,7 @@ pub fn build_ui(app: &adw::Application) {
                 "audio" => header_title_clone.set_title("Audio and Sound"),
                 "storage" => header_title_clone.set_title("Storage and NVMe"),
                 "peripherals" => header_title_clone.set_title("Camera and Peripherals"),
+                "other" => header_title_clone.set_title("Other / System Devices"),
                 "firmware" => header_title_clone.set_title("Firmware Updates"),
                 "history" => header_title_clone.set_title("History and Rollback"),
                 _ => header_title_clone.set_title("Hardware Details"),
@@ -228,6 +230,10 @@ fn refresh_data(
     }
     peri_page.add(&peri_group);
     stack.add_named(&wrap_in_scrolled(peri_page), Some("peripherals"));
+
+    // Other / System Devices (bridges, serial controllers, SMBus, ...):
+    // counted in the totals but previously rendered on no page.
+    add_category_page(stack, &scanned, DeviceCategory::Other, "other", toast_overlay);
 
     // 3. Firmware Page
     let fw_page = PreferencesPage::new();
