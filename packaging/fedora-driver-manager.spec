@@ -1,5 +1,5 @@
 Name:           fedora-driver-manager
-Version:        0.1.2
+Version:        0.1.3
 Release:        %autorelease
 Summary:        Hardware driver, firmware, and rollback manager for Fedora
 License:        GPL-3.0-or-later AND Apache-2.0 AND (Apache-2.0 WITH LLVM-exception) AND MIT AND MPL-2.0 AND Unlicense
