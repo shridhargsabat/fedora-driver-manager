@@ -106,8 +106,34 @@ impl HardwareScanner {
 
     pub fn scan_pci() -> Result<ParseOutcome> {
         let output = Command::new("lspci").arg("-nnk").output()?;
+        Self::scan_pci_output(&output)
+    }
+
+    /// `Output`-based PCI scan core, split from [`Self::scan_pci`] for
+    /// testability. A nonzero exit is an error surfaced through
+    /// `ScanReport` — never parsed as a genuine-empty device list.
+    fn scan_pci_output(output: &std::process::Output) -> Result<ParseOutcome> {
+        Self::ensure_command_success("lspci", output)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         Self::parse_pci_output(&stdout)
+    }
+
+    /// Fail with stderr context when a helper tool exits non-zero, so
+    /// callers can tell "tool failed" apart from "genuine empty result".
+    /// Mirrors `SystemBackend::ensure_command_success`.
+    fn ensure_command_success(tool: &str, output: &std::process::Output) -> Result<()> {
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        match output.status.code() {
+            Some(code) if !stderr.is_empty() => {
+                anyhow::bail!("{tool} failed with exit code {code}: {stderr}")
+            }
+            Some(code) => anyhow::bail!("{tool} failed with exit code {code}"),
+            None => anyhow::bail!("{tool} terminated by signal"),
+        }
     }
 
     fn parse_pci_output(stdout: &str) -> Result<ParseOutcome> {
@@ -214,6 +240,14 @@ impl HardwareScanner {
 
     pub fn scan_usb() -> Result<ParseOutcome> {
         let output = Command::new("lsusb").output()?;
+        Self::scan_usb_output(&output)
+    }
+
+    /// `Output`-based USB scan core, split from [`Self::scan_usb`] for
+    /// testability. A nonzero exit is an error surfaced through
+    /// `ScanReport` — never parsed as a genuine-empty device list.
+    fn scan_usb_output(output: &std::process::Output) -> Result<ParseOutcome> {
+        Self::ensure_command_success("lsusb", output)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         Self::parse_usb_output(&stdout)
     }
@@ -703,5 +737,51 @@ mod tests {
         assert_eq!(outcome.devices.len(), 1);
         assert_eq!(outcome.devices[0].vendor, "Logitech");
         assert_eq!(outcome.devices[0].name, "Logitech, Inc. Unifying Receiver");
+    }
+
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    fn test_output(code: i32, stdout: &str, stderr: &str) -> Output {
+        // from_raw takes a raw waitpid status; the exit code lives in bits 8..16.
+        Output {
+            status: ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn pci_nonzero_exit_empty_stdout_is_err() {
+        let out = test_output(1, "", "lspci: unable to read snapshot");
+        let err = HardwareScanner::scan_pci_output(&out).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("lspci"), "missing tool name: {msg}");
+        assert!(msg.contains('1'), "missing exit code: {msg}");
+    }
+
+    #[test]
+    fn usb_nonzero_exit_empty_stdout_is_err() {
+        let out = test_output(1, "", "");
+        let err = HardwareScanner::scan_usb_output(&out).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("lsusb"), "missing tool name: {msg}");
+        assert!(msg.contains('1'), "missing exit code: {msg}");
+    }
+
+    #[test]
+    fn pci_zero_exit_empty_stdout_is_ok_empty() {
+        let out = test_output(0, "", "");
+        let outcome = HardwareScanner::scan_pci_output(&out).expect("genuine empty must be Ok");
+        assert!(outcome.devices.is_empty());
+        assert!(outcome.warning.is_none());
+    }
+
+    #[test]
+    fn usb_zero_exit_empty_stdout_is_ok_empty() {
+        let out = test_output(0, "", "");
+        let outcome = HardwareScanner::scan_usb_output(&out).expect("genuine empty must be Ok");
+        assert!(outcome.devices.is_empty());
+        assert!(outcome.warning.is_none());
     }
 }
