@@ -31,11 +31,32 @@ impl SystemBackend {
             .args(["get-devices", "--json", "--no-unreported-check"])
             .output()?;
 
-        if !output.status.success() {
-            return Ok(Vec::new());
-        }
+        Self::ensure_command_success("fwupdmgr", &output)?;
+        Self::parse_firmware_json(&String::from_utf8_lossy(&output.stdout))
+    }
 
-        let val: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    /// Fail with stderr context when a helper tool exits non-zero, so
+    /// callers can tell "tool failed" apart from "genuine empty result".
+    fn ensure_command_success(tool: &str, output: &std::process::Output) -> Result<()> {
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        match output.status.code() {
+            Some(code) if !stderr.is_empty() => {
+                anyhow::bail!("{tool} failed with exit code {code}: {stderr}")
+            }
+            Some(code) => anyhow::bail!("{tool} failed with exit code {code}"),
+            None => anyhow::bail!("{tool} terminated by signal"),
+        }
+    }
+
+    /// Parse `fwupdmgr get-devices --json` output. A missing or empty
+    /// `Devices` list is a genuine empty result (`Ok(vec![])`), never an
+    /// error.
+    fn parse_firmware_json(stdout: &str) -> Result<Vec<FirmwareItem>> {
+        let val: serde_json::Value = serde_json::from_str(stdout)?;
         let mut items = Vec::new();
 
         if let Some(devices) = val.get("Devices").and_then(|d| d.as_array()) {
@@ -73,10 +94,7 @@ impl SystemBackend {
             .args(["history", "list", "--json"])
             .output()?;
 
-        if !output.status.success() {
-            return Ok(Vec::new());
-        }
-
+        Self::ensure_command_success("dnf5", &output)?;
         Self::parse_dnf_history_json(&String::from_utf8_lossy(&output.stdout), limit)
     }
 
@@ -286,5 +304,84 @@ mod tests {
         assert_eq!(action_from_command_line("/usr/bin/dnf remove -y foo"), "remove");
         assert_eq!(action_from_command_line("dnf5daemon-server"), "dnf5daemon-server");
         assert_eq!(action_from_command_line(""), "Transaction");
+    }
+
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    fn test_output(code: i32, stdout: &str, stderr: &str) -> Output {
+        // from_raw takes a raw waitpid status; the exit code lives in bits 8..16.
+        Output {
+            status: ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn successful_exit_passes_through() {
+        let out = test_output(0, "ok", "");
+        assert!(SystemBackend::ensure_command_success("fwupdmgr", &out).is_ok());
+    }
+
+    #[test]
+    fn failing_exit_returns_stderr_context() {
+        let out = test_output(1, "", "No such device");
+        let err = SystemBackend::ensure_command_success("fwupdmgr", &out).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("fwupdmgr"), "missing tool name: {msg}");
+        assert!(msg.contains("No such device"), "missing stderr: {msg}");
+    }
+
+    #[test]
+    fn failing_exit_without_stderr_still_errors() {
+        let out = test_output(2, "", "");
+        let err = SystemBackend::ensure_command_success("dnf5", &out).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("dnf5"), "missing tool name: {msg}");
+        assert!(msg.contains('2'), "missing exit code: {msg}");
+    }
+
+    /// Representative `fwupdmgr get-devices --json` payload (trimmed).
+    const FWUPD_FIXTURE: &str = r#"{
+  "Devices": [
+    {
+      "Name": "System Firmware",
+      "Vendor": "Lenovo",
+      "Version": "1.45",
+      "Summary": "UEFI firmware",
+      "Flags": ["updatable", "internal"]
+    },
+    {
+      "Name": "NVMe SSD",
+      "Flags": []
+    }
+  ]
+}"#;
+
+    #[test]
+    fn parses_firmware_devices() {
+        let items = SystemBackend::parse_firmware_json(FWUPD_FIXTURE).expect("fixture must parse");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].name, "System Firmware");
+        assert_eq!(items[0].vendor, "Lenovo");
+        assert_eq!(items[0].version, "1.45");
+        assert!(items[0].updatable);
+        assert_eq!(items[1].vendor, "Unknown Vendor");
+        assert_eq!(items[1].version, "N/A");
+        assert!(!items[1].updatable);
+    }
+
+    #[test]
+    fn empty_firmware_list_is_ok_empty() {
+        let items =
+            SystemBackend::parse_firmware_json(r#"{"Devices": []}"#).expect("empty must parse");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn missing_devices_key_is_ok_empty() {
+        let items = SystemBackend::parse_firmware_json(r#"{}"#).expect("missing key must parse");
+        assert!(items.is_empty());
     }
 }
