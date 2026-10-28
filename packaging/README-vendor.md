@@ -7,7 +7,7 @@ guidelines, "building with vendored dependencies"). Regenerate whenever
 ```bash
 cd /home/shridharsabat/tools/drivers
 cargo vendor vendor/
-tar --sort-name --mtime='2026-01-01' -czf packaging/fedora-driver-manager-0.1.0-vendor.tar.gz vendor
+tar --sort=name --mtime='2026-01-01' -czf packaging/fedora-driver-manager-0.1.0-vendor.tar.gz vendor
 rm -rf vendor/
 ```
 
