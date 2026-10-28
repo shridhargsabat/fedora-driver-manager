@@ -178,9 +178,14 @@ fn refresh_data(
 
     // 1. Overview Page
     let overview_page = PreferencesPage::new();
+    // PreferencesGroup description parses Pango markup (and offers no
+    // use-markup toggle), so escape the sysfs-derived model string.
     let sys_group = PreferencesGroup::builder()
         .title("System Overview")
-        .description(&format!("Device: {}", SystemBackend::get_laptop_model()))
+        .description(format!(
+            "Device: {}",
+            glib::markup_escape_text(&SystemBackend::get_laptop_model())
+        ))
         .build();
 
     let sb_row = ActionRow::builder()
@@ -256,6 +261,7 @@ fn refresh_data(
     let health_row = ActionRow::builder()
         .title(&health_title)
         .subtitle(&health_subtitle)
+        .use_markup(false)
         .build();
     let health_icon = Image::from_icon_name(health_icon_name);
     health_icon.set_pixel_size(16);
@@ -305,6 +311,7 @@ fn refresh_data(
         let err_row = ActionRow::builder()
             .title("Firmware scan failed")
             .subtitle(format!("fwupdmgr error: {e:#}"))
+            .use_markup(false)
             .build();
         let err_icon = Image::from_icon_name("dialog-error-symbolic");
         err_icon.set_pixel_size(16);
@@ -317,6 +324,7 @@ fn refresh_data(
             let row = ActionRow::builder()
                 .title(&fw.name)
                 .subtitle(&format!("Vendor: {} | Version: {}", fw.vendor, fw.version))
+                .use_markup(false)
                 .build();
             let fw_icon = Image::from_icon_name("system-software-update-symbolic");
             fw_icon.set_pixel_size(16);
@@ -358,6 +366,7 @@ fn refresh_data(
         let err_row = ActionRow::builder()
             .title("Transaction history unavailable")
             .subtitle(format!("dnf5 error: {e:#}"))
+            .use_markup(false)
             .build();
         let err_icon = Image::from_icon_name("dialog-error-symbolic");
         err_icon.set_pixel_size(16);
@@ -370,6 +379,7 @@ fn refresh_data(
             let row = ActionRow::builder()
                 .title(format!("Transaction #{}", tx.id))
                 .subtitle(&tx.command_line)
+                .use_markup(false)
                 .build();
             let hist_icon = Image::from_icon_name("document-revert-symbolic");
             hist_icon.set_pixel_size(16);
@@ -477,6 +487,8 @@ fn add_category_page(
 }
 
 fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> ExpanderRow {
+    // All titles/subtitles below carry parser data (lspci names, drivers,
+    // module lists): keep markup off so device strings render literally.
     let expander = ExpanderRow::builder()
         .title(&dev.name)
         .subtitle(&format!(
@@ -484,6 +496,7 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
             dev.current_driver.as_deref().unwrap_or("None (Subsystem managed)"),
             dev.status.label()
         ))
+        .use_markup(false)
         .build();
 
     let category_icon = Image::from_icon_name(dev.category.icon_name());
@@ -498,6 +511,7 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
         let rec_row = ActionRow::builder()
             .title("Recommendation")
             .subtitle(rec)
+            .use_markup(false)
             .build();
         let rec_icon = Image::from_icon_name("dialog-information-symbolic");
         rec_icon.set_pixel_size(16);
@@ -508,6 +522,7 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
     let id_row = ActionRow::builder()
         .title("Hardware Identifier")
         .subtitle(&format!("Vendor: [0x{}] Device: [0x{}] Slot: {}", dev.vendor_id, dev.device_id, dev.id))
+        .use_markup(false)
         .build();
     let id_icon = Image::from_icon_name("preferences-system-details-symbolic");
     id_icon.set_pixel_size(16);
@@ -518,6 +533,7 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
         let mod_row = ActionRow::builder()
             .title("Compatible Kernel Modules")
             .subtitle(&dev.available_modules.join(", "))
+            .use_markup(false)
             .build();
         let mod_icon = Image::from_icon_name("system-run-symbolic");
         mod_icon.set_pixel_size(16);
