@@ -43,11 +43,11 @@
   <screenshots>
     <screenshot type="default">
       <caption>Hardware overview with driver recommendations</caption>
-      <image>https://raw.githubusercontent.com/shridhargsabat/fedora-driver-manager/master/screenshots/overview.png</image>
+      <image>https://raw.githubusercontent.com/shridhargsabat/fedora-driver-manager/main/screenshots/overview.png</image>
     </screenshot>
     <screenshot>
       <caption>Firmware status and transaction rollback</caption>
-      <image>https://raw.githubusercontent.com/shridhargsabat/fedora-driver-manager/master/screenshots/firmware.png</image>
+      <image>https://raw.githubusercontent.com/shridhargsabat/fedora-driver-manager/main/screenshots/firmware.png</image>
     </screenshot>
   </screenshots>
   <releases>
