@@ -285,16 +285,40 @@ fn refresh_data(
                 .build();
 
             let tx_id = tx.id;
-            undo_btn.connect_clicked(move |_| {
+            let tx_cmd = tx.command_line.clone();
+            undo_btn.connect_clicked(move |btn| {
+                // Confirm before running a privileged undo: show what will run as root.
                 let toast = toast_c.clone();
-                glib::spawn_future_local(async move {
-                    toast.add_toast(Toast::new(&format!("Requesting pkexec to undo transaction #{}...", tx_id)));
-                    let res = SystemBackend::execute_pkexec(&["dnf5", "history", "undo", "-y", &tx_id.to_string()]);
-                    match res {
-                        Ok(_) => toast.add_toast(Toast::new(&format!("Transaction #{} undone successfully", tx_id))),
-                        Err(e) => toast.add_toast(Toast::new(&format!("Undo failed: {}", e))),
+                let cmd = tx_cmd.clone();
+                let parent = btn
+                    .root()
+                    .and_then(|root| root.downcast::<gtk4::Window>().ok());
+                let dialog = adw::MessageDialog::new(
+                    parent.as_ref(),
+                    Some(&format!("Undo transaction #{}?", tx_id)),
+                    Some(&format!(
+                        "This will run the following command as root:\n\ndnf5 history undo -y {}\n\nOriginal command: {}",
+                        tx_id, cmd
+                    )),
+                );
+                dialog.add_responses(&[("cancel", "Cancel"), ("undo", "Undo")]);
+                dialog.set_response_appearance("undo", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.set_close_response("cancel");
+                dialog.connect_response(None, move |_, response| {
+                    if response == "undo" {
+                        let toast = toast.clone();
+                        glib::spawn_future_local(async move {
+                            toast.add_toast(Toast::new(&format!("Requesting pkexec to undo transaction #{}...", tx_id)));
+                            let res = SystemBackend::execute_pkexec(&["dnf5", "history", "undo", "-y", &tx_id.to_string()]);
+                            match res {
+                                Ok(_) => toast.add_toast(Toast::new(&format!("Transaction #{} undone successfully", tx_id))),
+                                Err(e) => toast.add_toast(Toast::new(&format!("Undo failed: {}", e))),
+                            }
+                        });
                     }
                 });
+                dialog.present();
             });
 
             row.add_suffix(&undo_btn);
