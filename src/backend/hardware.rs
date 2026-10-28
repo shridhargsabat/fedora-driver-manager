@@ -5,6 +5,15 @@ use std::process::Command;
 
 pub struct HardwareScanner;
 
+/// PCI device IDs (vendor 14e4) supported by the proprietary `wl` driver
+/// (broadcom-wl): BCM4311/4312/4313, BCM4321/4322, BCM43224/43225/43227/
+/// 43228, BCM43142, BCM4331, BCM4352, BCM4360. Anything else (notably
+/// modern brcmfmac chips) must not get a broadcom-wl recommendation.
+const BROADCOM_WL_DEVICE_IDS: &[&str] = &[
+    "0576", "4311", "4312", "4313", "4315", "4328", "4329", "432a", "432b", "432c", "432d",
+    "4331", "4353", "4357", "4358", "4359", "4360", "4365", "43a0", "43b1", "4727",
+];
+
 /// Outcome of a full hardware scan: devices from every backend that
 /// succeeded, plus the failure of each backend that did not. One backend
 /// failing (e.g. `lspci` missing) must not discard the other's results.
@@ -254,10 +263,18 @@ impl HardwareScanner {
         }
     }
 
+    /// True when the card is a Broadcom chip on the `wl` support list.
+    fn broadcom_wl_supported(v_id: &str, d_id: &str) -> bool {
+        v_id.eq_ignore_ascii_case("14e4")
+            && BROADCOM_WL_DEVICE_IDS
+                .iter()
+                .any(|known| d_id.eq_ignore_ascii_case(known))
+    }
+
     fn evaluate_pci_status(
         category: &DeviceCategory,
         v_id: &str,
-        _d_id: &str,
+        d_id: &str,
         driver: &Option<String>,
         _modules: &[String],
     ) -> (DriverStatus, Option<String>, Option<String>) {
@@ -296,12 +313,24 @@ impl HardwareScanner {
             DeviceCategory::Network => {
                 if driver.is_some() {
                     (DriverStatus::Optimal, Some("In-kernel wireless/network driver active".to_string()), None)
-                } else if v_id == "14e4" {
-                    // Broadcom
+                } else if Self::broadcom_wl_supported(v_id, d_id) {
+                    // Broadcom chip on the wl support list.
                     (
                         DriverStatus::Missing,
                         Some("Broadcom proprietary driver recommended (broadcom-wl)".to_string()),
                         Some("broadcom-wl".to_string()),
+                    )
+                } else if v_id.eq_ignore_ascii_case("14e4") {
+                    // Modern/unsupported Broadcom chip: wl neither supports
+                    // it nor builds on current kernels. Point at the
+                    // in-kernel drivers instead of a harmful recommendation.
+                    (
+                        DriverStatus::Missing,
+                        Some(
+                            "Broadcom adapter not supported by broadcom-wl; check in-kernel b43/brcmfmac support"
+                                .to_string(),
+                        ),
+                        None,
                     )
                 } else {
                     (DriverStatus::Missing, Some("No driver loaded for this network adapter".to_string()), None)
@@ -476,5 +505,49 @@ mod tests {
         assert!(report.pci_error.is_none());
         assert!(report.usb_error.is_none());
         assert!(!report.all_backends_failed());
+    }
+
+    #[test]
+    fn broadcom_wl_recommended_for_supported_ids() {
+        // BCM4352 (14e4:43b1): on the wl support list.
+        let (status, _, pkg) =
+            HardwareScanner::evaluate_pci_status(&DeviceCategory::Network, "14e4", "43b1", &None, &[]);
+        assert_eq!(status, DriverStatus::Missing);
+        assert_eq!(pkg.as_deref(), Some("broadcom-wl"));
+    }
+
+    #[test]
+    fn broadcom_wl_withheld_for_modern_chips() {
+        // BCM43602 (14e4:43ba): brcmfmac territory, wl does not support it.
+        let (status, rec, pkg) =
+            HardwareScanner::evaluate_pci_status(&DeviceCategory::Network, "14e4", "43ba", &None, &[]);
+        assert_eq!(status, DriverStatus::Missing);
+        assert_eq!(pkg, None);
+        assert!(rec.expect("status must stay informative").contains("not supported by broadcom-wl"));
+    }
+
+    #[test]
+    fn broadcom_id_match_is_case_insensitive() {
+        let (_, _, pkg) = HardwareScanner::evaluate_pci_status(
+            &DeviceCategory::Network,
+            "14E4",
+            "43B1",
+            &None,
+            &[],
+        );
+        assert_eq!(pkg.as_deref(), Some("broadcom-wl"));
+    }
+
+    #[test]
+    fn broadcom_with_driver_loaded_needs_nothing() {
+        let (status, _, pkg) = HardwareScanner::evaluate_pci_status(
+            &DeviceCategory::Network,
+            "14e4",
+            "43b1",
+            &Some("wl".to_string()),
+            &[],
+        );
+        assert_eq!(status, DriverStatus::Optimal);
+        assert_eq!(pkg, None);
     }
 }
