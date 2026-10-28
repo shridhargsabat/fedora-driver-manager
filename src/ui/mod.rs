@@ -397,9 +397,15 @@ fn render_data(
     }
     if let Ok(fw_devices) = &fw_result {
         for fw in fw_devices {
+            let subtitle = match fw.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(summary) => {
+                    format!("Vendor: {} | Version: {}\n{}", fw.vendor, fw.version, summary)
+                }
+                None => format!("Vendor: {} | Version: {}", fw.vendor, fw.version),
+            };
             let row = ActionRow::builder()
                 .title(&fw.name)
-                .subtitle(format!("Vendor: {} | Version: {}", fw.vendor, fw.version))
+                .subtitle(subtitle)
                 .use_markup(false)
                 .build();
             let fw_icon = Image::from_icon_name("system-software-update-symbolic");
