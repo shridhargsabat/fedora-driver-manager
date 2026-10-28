@@ -51,11 +51,21 @@
     </screenshot>
   </screenshots>
   <releases>
-    <release version="0.1.4" date="2026-10-28"/>
-    <release version="0.1.3" date="2026-10-28"/>
-    <release version="0.1.2" date="2026-10-28"/>
-    <release version="0.1.1" date="2026-10-28"/>
-    <release version="0.1.0" date="2026-10-28"/>
+    <release version="0.1.4" date="2026-10-28">
+      <description><p>Security hardening and honest error states.</p></description>
+    </release>
+    <release version="0.1.3" date="2026-10-28">
+      <description><p>New About dialog with version info.</p></description>
+    </release>
+    <release version="0.1.2" date="2026-10-28">
+      <description><p>Fixed app-grid launch and double window.</p></description>
+    </release>
+    <release version="0.1.1" date="2026-10-28">
+      <description><p>25 bug fixes and robustness improvements.</p></description>
+    </release>
+    <release version="0.1.0" date="2026-10-28">
+      <description><p>Initial release.</p></description>
+    </release>
   </releases>
   <content_rating type="oars-1.1"/>
 </component>
