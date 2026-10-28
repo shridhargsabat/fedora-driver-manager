@@ -1,10 +1,11 @@
 use crate::backend::hardware::{HardwareScanner, ScanReport};
 use crate::backend::system::{RootAction, SystemBackend};
-use crate::models::{DeviceCategory, DnfTransaction, DriverPackage, DriverStatus, FirmwareItem, HardwareDevice, PackageUpdate};
+use crate::models::{DeviceCategory, DnfTransaction, DriverPackage, DriverStatus, FirmwareItem, HardwareDevice, PackageUpdate, UpdateSet, UpdaterSettings};
 use adw::prelude::*;
 use adw::{ActionRow, ExpanderRow, HeaderBar, NavigationPage, NavigationSplitView, PreferencesGroup, PreferencesPage, Toast, ToastOverlay, WindowTitle};
 use gtk4::prelude::{IsA, WidgetExt};
 use gio::prelude::ActionMapExt;
+use glib::prelude::ToVariant;
 use gtk4::{Align, Box, Button, Image, Label, Orientation, PolicyType, ScrolledWindow, Spinner};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -111,6 +112,7 @@ pub fn build_ui(app: &adw::Application) {
         .build();
     let menu = gio::Menu::new();
     menu.append(Some("What's New"), Some("win.whatsnew"));
+    menu.append(Some("Automatically check for updates"), Some("win.auto_check"));
     menu.append(Some("About Driver Manager"), Some("win.about"));
     menu_btn.set_menu_model(Some(&menu));
     content_header.pack_end(&menu_btn);
@@ -141,6 +143,7 @@ pub fn build_ui(app: &adw::Application) {
         refresh_btn.clone(),
         sidebar_list.clone(),
         false,
+        None,
     );
 
     // Sidebar selection handler
@@ -189,6 +192,7 @@ pub fn build_ui(app: &adw::Application) {
             refresh_clone2.clone(),
             sidebar_clone2.clone(),
             true,
+            None,
         );
     });
 
@@ -220,6 +224,93 @@ pub fn build_ui(app: &adw::Application) {
         });
     }
     window.add_action(&whatsnew_action);
+
+    // --- Updater: auto-check + notifications ---
+    let settings = UpdaterSettings::load();
+    let last_keys = Rc::new(RefCell::new(settings.last_notified_keys.clone()));
+    let auto_source: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+
+    // Shared schedule: one auto refresh (with notify-on-new) via the same
+    // scan machinery as manual Refresh. Reused by the timer and toggle-ON.
+    let schedule_auto_check = {
+        let stack_c = stack.clone();
+        let devices_c = devices_state.clone();
+        let toast_c = toast_ref.clone();
+        let spinner_c = spinner.clone();
+        let refresh_c = refresh_btn.clone();
+        let sidebar_c = sidebar_list.clone();
+        let last_keys_c = last_keys.clone();
+        let app_c = app.clone();
+        Rc::new(move || {
+            let last_keys_c = last_keys_c.clone();
+            let app_c = app_c.clone();
+            let on_done: Rc<dyn Fn(Vec<String>)> = Rc::new(move |keys: Vec<String>| {
+                let last = last_keys_c.borrow().clone();
+                if let Some(body) = should_notify_update(&last, &keys) {
+                    let notification = gio::Notification::new("Driver updates available");
+                    notification.set_body(Some(&body));
+                    app_c.send_notification(Some("driver-updates"), &notification);
+                }
+                // Persist the new baseline (silent on IO error — toast would spam).
+                let mut settings = UpdaterSettings::load();
+                settings.last_notified_keys = keys.clone();
+                let _ = settings.save();
+                *last_keys_c.borrow_mut() = keys;
+            });
+            refresh_data_async(
+                stack_c.clone(),
+                devices_c.clone(),
+                toast_c.clone(),
+                spinner_c.clone(),
+                refresh_c.clone(),
+                sidebar_c.clone(),
+                false,
+                Some(on_done),
+            );
+        })
+    };
+
+    if settings.auto_check {
+        let secs = (UpdaterSettings::clamp_interval(settings.interval_hours) * 3600) as u32;
+        let tick = schedule_auto_check.clone();
+        *auto_source.borrow_mut() = Some(glib::timeout_add_seconds_local(secs, move || {
+            tick();
+            glib::ControlFlow::Continue
+        }));
+    }
+
+    let auto_check_action = gio::SimpleAction::new_stateful(
+        "auto_check",
+        None,
+        &settings.auto_check.to_variant(),
+    );
+    {
+        let auto_source_c = auto_source.clone();
+        let schedule_c = schedule_auto_check.clone();
+        auto_check_action.connect_change_state(move |action, value| {
+            let Some(enabled) = value.and_then(|v| v.get::<bool>()) else {
+                return;
+            };
+            action.set_state(&enabled.to_variant());
+            let mut settings = UpdaterSettings::load();
+            settings.auto_check = enabled;
+            let _ = settings.save(); // silent on IO error
+            if enabled {
+                // Immediate check now, then the repeating timer.
+                schedule_c();
+                let tick = schedule_c.clone();
+                let secs = (UpdaterSettings::clamp_interval(settings.interval_hours) * 3600) as u32;
+                *auto_source_c.borrow_mut() =
+                    Some(glib::timeout_add_seconds_local(secs, move || {
+                        tick();
+                        glib::ControlFlow::Continue
+                    }));
+            } else if let Some(id) = auto_source_c.borrow_mut().take() {
+                id.remove();
+            }
+        });
+    }
+    window.add_action(&auto_check_action);
 
     window.present();
 }
@@ -267,6 +358,7 @@ impl ScanResults {
 /// `ScanResults` via `gio::spawn_blocking`, then render back on the main
 /// thread (toasts included). The Refresh button is desensitized while a scan
 /// is in flight so scans cannot overlap.
+#[allow(clippy::too_many_arguments)] // 8 widget/state handles threaded through; a params struct is churn for one internal caller pair.
 fn refresh_data_async(
     stack: gtk4::Stack,
     devices_state: Rc<RefCell<Vec<HardwareDevice>>>,
@@ -275,6 +367,7 @@ fn refresh_data_async(
     refresh_btn: Button,
     sidebar: gtk4::ListBox,
     success_toast: bool,
+    on_updates: Option<Rc<dyn Fn(Vec<String>)>>,
 ) {
     spinner.start();
     refresh_btn.set_sensitive(false);
@@ -290,6 +383,10 @@ fn refresh_data_async(
         };
         // Gate the success toast on a genuinely clean scan: every failure
         // path already produced its own error toast in render_data.
+        let update_keys: Vec<String> = match &results.pending_updates {
+            Ok(pkgs) => pkgs.iter().map(|u| u.key()).collect(),
+            Err(_) => Vec::new(),
+        };
         let clean = results.report.errors().is_empty()
             && results.firmware.is_ok()
             && results.history.is_ok()
@@ -328,6 +425,9 @@ fn refresh_data_async(
         if success_toast && clean {
             toast_overlay.add_toast(Toast::new("Hardware re-scanned successfully"));
         }
+        if let Some(cb) = on_updates {
+            cb(update_keys);
+        }
         spinner.stop();
         refresh_btn.set_sensitive(true);
     });
@@ -350,6 +450,39 @@ fn health_counts(devices: &[HardwareDevice]) -> (usize, usize, usize) {
 /// Total pending updates: package upgrades + updatable firmware items.
 fn update_count(pkgs: &[PackageUpdate], firmware: &[FirmwareItem]) -> usize {
     pkgs.len() + firmware.iter().filter(|f| f.updatable).count()
+}
+
+/// Notification body when `current` keys contain arrivals vs `last`;
+/// None when silent (nothing pending or nothing new).
+/// Diffing goes through [`UpdateSet::newly_arrived`] so arrival semantics
+/// stay single-sourced: keys (`name:arch:to_evr`, see
+/// [`PackageUpdate::key`]) round-trip back into stubs losslessly, since
+/// `key()` only depends on name/arch/to_evr (`splitn(3)` keeps epoch
+/// colons in EVRs intact).
+fn should_notify_update(last: &[String], current: &[String]) -> Option<String> {
+    let to_stub = |k: &String| {
+        let mut parts = k.splitn(3, ':');
+        PackageUpdate {
+            name: parts.next().unwrap_or("").to_string(),
+            arch: parts.next().unwrap_or("").to_string(),
+            from_evr: String::new(),
+            to_evr: parts.next().unwrap_or("").to_string(),
+            repo: String::new(),
+        }
+    };
+    let old: Vec<PackageUpdate> = last.iter().map(to_stub).collect();
+    let new: Vec<PackageUpdate> = current.iter().map(to_stub).collect();
+    let fresh = UpdateSet::newly_arrived(&old, &new);
+    if fresh.is_empty() {
+        None
+    } else {
+        let names: Vec<&str> = fresh.iter().take(3).map(String::as_str).collect();
+        let mut body = format!("New updates: {}", names.join(", "));
+        if fresh.len() > 3 {
+            body.push_str(&format!(" (+{} more)", fresh.len() - 3));
+        }
+        Some(body)
+    }
 }
 
 /// Overview health subtitle, e.g. "23 optimal, 0 actionable, 2 unknown".
@@ -1160,5 +1293,14 @@ mod tests {
             FirmwareItem { name: "TPM".to_string(), vendor: "Intel".to_string(), version: "1".to_string(), updatable: false, summary: None },
         ];
         assert_eq!(update_count(&pkgs, &fw), 2);
+    }
+
+    #[test]
+    fn notify_only_on_new_arrivals() {
+        let old = vec!["a:1".to_string()];
+        assert!(should_notify_update(&old, &[]).is_none()); // nothing pending → silent
+        assert!(should_notify_update(&old, &old).is_none()); // same set → silent
+        let body = should_notify_update(&old, &["a:1".to_string(), "b:2".to_string()]).unwrap();
+        assert!(body.contains('b'));
     }
 }
