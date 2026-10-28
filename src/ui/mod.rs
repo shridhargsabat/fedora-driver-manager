@@ -116,6 +116,7 @@ pub fn build_ui(app: &adw::Application) {
         toast_ref.clone(),
         spinner.clone(),
         refresh_btn.clone(),
+        sidebar_list.clone(),
         false,
     );
 
@@ -125,7 +126,11 @@ pub fn build_ui(app: &adw::Application) {
     sidebar_list.connect_row_selected(move |_, row| {
         if let Some(r) = row {
             let name = r.widget_name();
-            stack_clone.set_visible_child_name(&name);
+            // During async (re)loads the stack may not have the page yet:
+            // only switch when it exists.
+            if stack_clone.child_by_name(&name).is_some() {
+                stack_clone.set_visible_child_name(&name);
+            }
 
             // Update title
             match name.as_str() {
@@ -149,6 +154,7 @@ pub fn build_ui(app: &adw::Application) {
     let toast_clone2 = toast_ref.clone();
     let spinner_clone2 = spinner.clone();
     let refresh_clone2 = refresh_btn.clone();
+    let sidebar_clone2 = sidebar_list.clone();
     refresh_btn.connect_clicked(move |_| {
         refresh_data_async(
             stack_clone2.clone(),
@@ -156,6 +162,7 @@ pub fn build_ui(app: &adw::Application) {
             toast_clone2.clone(),
             spinner_clone2.clone(),
             refresh_clone2.clone(),
+            sidebar_clone2.clone(),
             true,
         );
     });
@@ -196,6 +203,7 @@ fn refresh_data_async(
     toast_overlay: Rc<ToastOverlay>,
     spinner: Spinner,
     refresh_btn: Button,
+    sidebar: gtk4::ListBox,
     success_toast: bool,
 ) {
     spinner.start();
@@ -215,6 +223,14 @@ fn refresh_data_async(
         let clean =
             results.report.errors().is_empty() && results.firmware.is_ok() && results.history.is_ok();
         render_data(&stack, &devices_state, &toast_overlay, results);
+        // Rebuilds reset the stack to its first child: restore whatever page
+        // the sidebar has selected (also covers clicks made mid-scan).
+        if let Some(selected) = sidebar.selected_row() {
+            let name = selected.widget_name();
+            if stack.child_by_name(&name).is_some() {
+                stack.set_visible_child_name(&name);
+            }
+        }
         if success_toast && clean {
             toast_overlay.add_toast(Toast::new("Hardware re-scanned successfully"));
         }
