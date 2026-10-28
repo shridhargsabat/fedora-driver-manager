@@ -16,7 +16,10 @@ impl HardwareScanner {
     pub fn scan_pci() -> Result<Vec<HardwareDevice>> {
         let output = Command::new("lspci").arg("-nnk").output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
+        Self::parse_pci_output(&stdout)
+    }
 
+    fn parse_pci_output(stdout: &str) -> Result<Vec<HardwareDevice>> {
         let dev_re = Regex::new(
             r"^([0-9a-f:.]+)\s+([^\[]+?)\s+\[([0-9a-f]{4})\]:\s+(.+?)\s+\[([0-9a-f]{4}):([0-9a-f]{4})\]",
         )?;
@@ -168,16 +171,29 @@ impl HardwareScanner {
     }
 
     fn categorize_pci(class_code: &str, name: &str) -> DeviceCategory {
-        let lower = name.to_lowercase();
-        if class_code.starts_with("03") || lower.contains("vga") || lower.contains("graphics") || lower.contains("display") {
-            DeviceCategory::Gpu
-        } else if class_code.starts_with("02") || lower.contains("network") || lower.contains("wifi") || lower.contains("wireless") || lower.contains("ethernet") {
-            DeviceCategory::Network
-        } else if class_code.starts_with("04") || lower.contains("audio") || lower.contains("sound") {
-            DeviceCategory::Audio
-        } else if class_code.starts_with("01") || lower.contains("nvme") || lower.contains("storage") || lower.contains("sata") {
-            DeviceCategory::Storage
-        } else if class_code.starts_with("0c03") || lower.contains("thunderbolt") {
+        // PCI class codes decide the category. Name substring matching used
+        // to override them, so a 0604 bridge named "PCI Express Graphics
+        // Port" showed up as a GPU and every 0c03 USB controller was labeled
+        // Thunderbolt. Only Thunderbolt keeps a name fallback: its PCI
+        // functions genuinely span classes (NHI system peripherals, bridges),
+        // while 0c03 hosts stay plain USB controllers per their class code.
+        if class_code.starts_with("03") {
+            return DeviceCategory::Gpu;
+        }
+        if class_code.starts_with("02") {
+            return DeviceCategory::Network;
+        }
+        if class_code.starts_with("04") {
+            return DeviceCategory::Audio;
+        }
+        if class_code.starts_with("01") {
+            return DeviceCategory::Storage;
+        }
+        if class_code.starts_with("0c03") {
+            return DeviceCategory::Other;
+        }
+
+        if name.to_lowercase().contains("thunderbolt") {
             DeviceCategory::Thunderbolt
         } else {
             DeviceCategory::Other
@@ -259,5 +275,99 @@ impl HardwareScanner {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verbatim `lspci -nnk` lines captured on this machine (Lenovo Raptor Lake).
+    const LSPCI_FIXTURE: &str = "00:06.0 PCI bridge [0604]: Intel Corporation Raptor Lake PCI Express 4.0 Graphics Port [8086:a74d]\n\tSubsystem: Lenovo Device [17aa:383d]\n\tKernel driver in use: pcieport\n\tKernel modules: shpchp\n00:0d.0 USB controller [0c03]: Intel Corporation Raptor Lake-P Thunderbolt 4 USB Controller [8086:a71e]\n\tSubsystem: Intel Corporation Device [8086:7270]\n\tKernel driver in use: xhci_hcd\n\tKernel modules: xhci_pci\n00:14.0 USB controller [0c03]: Intel Corporation Alder Lake PCH USB 3.2 xHCI Host Controller [8086:51ed] (rev 01)\n\tSubsystem: Lenovo Device [17aa:386b]\n\tKernel driver in use: xhci_hcd\n\tKernel modules: xhci_pci\n00:02.0 VGA compatible controller [0300]: Intel Corporation Raptor Lake-P [UHD Graphics] [8086:a7a8] (rev 04)\n\tSubsystem: Lenovo Device [17aa:3812]\n\tKernel driver in use: i915\n\tKernel modules: i915, xe\n";
+
+    fn category_of(fixture: &str, slot: &str) -> DeviceCategory {
+        HardwareScanner::parse_pci_output(fixture)
+            .expect("fixture must parse")
+            .into_iter()
+            .find(|d| d.id == slot)
+            .unwrap_or_else(|| panic!("slot {slot} missing from fixture"))
+            .category
+    }
+
+    #[test]
+    fn graphics_named_bridge_is_not_a_gpu() {
+        assert_eq!(
+            HardwareScanner::categorize_pci(
+                "0604",
+                "Intel Corporation Raptor Lake PCI Express 4.0 Graphics Port"
+            ),
+            DeviceCategory::Other
+        );
+        assert_eq!(category_of(LSPCI_FIXTURE, "00:06.0"), DeviceCategory::Other);
+    }
+
+    #[test]
+    fn plain_usb_controller_is_not_thunderbolt() {
+        assert_eq!(
+            HardwareScanner::categorize_pci(
+                "0c03",
+                "Intel Corporation Alder Lake PCH USB 3.2 xHCI Host Controller"
+            ),
+            DeviceCategory::Other
+        );
+        assert_eq!(category_of(LSPCI_FIXTURE, "00:14.0"), DeviceCategory::Other);
+    }
+
+    #[test]
+    fn usb4_thunderbolt_port_follows_class_code() {
+        // Integrated Thunderbolt 4 USB controller: class 0c03 wins over the
+        // "Thunderbolt" name substring.
+        assert_eq!(
+            HardwareScanner::categorize_pci(
+                "0c03",
+                "Intel Corporation Raptor Lake-P Thunderbolt 4 USB Controller"
+            ),
+            DeviceCategory::Other
+        );
+        assert_eq!(category_of(LSPCI_FIXTURE, "00:0d.0"), DeviceCategory::Other);
+    }
+
+    #[test]
+    fn real_gpu_stays_gpu() {
+        assert_eq!(
+            HardwareScanner::categorize_pci("0300", "Intel Corporation Raptor Lake-P [UHD Graphics]"),
+            DeviceCategory::Gpu
+        );
+        assert_eq!(
+            HardwareScanner::categorize_pci("0302", "NVIDIA Corporation GA107M [GeForce RTX 3050 Mobile]"),
+            DeviceCategory::Gpu
+        );
+        assert_eq!(category_of(LSPCI_FIXTURE, "00:02.0"), DeviceCategory::Gpu);
+    }
+
+    #[test]
+    fn discrete_thunderbolt_nhi_stays_thunderbolt() {
+        // Discrete Thunderbolt NHI is a System peripheral (0880), so the
+        // Thunderbolt name fallback still applies there.
+        assert_eq!(
+            HardwareScanner::categorize_pci("0880", "Intel Corporation Thunderbolt 4 NHI"),
+            DeviceCategory::Thunderbolt
+        );
+    }
+
+    #[test]
+    fn known_classes_keep_their_categories() {
+        assert_eq!(
+            HardwareScanner::categorize_pci("0280", "Intel Corporation Raptor Lake PCH CNVi WiFi"),
+            DeviceCategory::Network
+        );
+        assert_eq!(
+            HardwareScanner::categorize_pci("0401", "Intel Corporation Raptor Lake-P/U/H cAVS"),
+            DeviceCategory::Audio
+        );
+        assert_eq!(
+            HardwareScanner::categorize_pci("0108", "Micron Technology Inc 2500 NVMe SSD (DRAM-less)"),
+            DeviceCategory::Storage
+        );
     }
 }
