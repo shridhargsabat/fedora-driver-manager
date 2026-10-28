@@ -188,6 +188,106 @@ pub fn parse_changelog(text: &str) -> Vec<ReleaseNotes> {
     notes
 }
 
+/// One pending driver-package upgrade: installed EVR → repo EVR.
+/// Sourced from `dnf5 check-upgrade --json` (libdnf5 compares EVRs).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageUpdate {
+    pub name: String,
+    pub arch: String,
+    pub from_evr: String,
+    pub to_evr: String,
+    pub repo: String,
+}
+
+impl PackageUpdate {
+    /// "old → new (repo)" for list subtitles and notifications.
+    pub fn summary(&self) -> String {
+        format!("{} → {} ({})", self.from_evr, self.to_evr, self.repo)
+    }
+
+    /// Stable identity for arrival/dismissal diffing across checks.
+    pub fn key(&self) -> String {
+        format!("{}:{}:{}", self.name, self.arch, self.to_evr)
+    }
+}
+
+/// Pure helpers for comparing update sets between checks.
+pub struct UpdateSet;
+
+impl UpdateSet {
+    /// Names present in `new` whose key was absent from `old`.
+    /// Drives "new updates available" notifications (no spam on re-scan).
+    pub fn newly_arrived(old: &[PackageUpdate], new: &[PackageUpdate]) -> Vec<String> {
+        let old_keys: std::collections::HashSet<String> = old.iter().map(|u| u.key()).collect();
+        new.iter()
+            .filter(|u| !old_keys.contains(&u.key()))
+            .map(|u| u.name.clone())
+            .collect()
+    }
+}
+
+/// Persisted updater preferences + last-notified state.
+/// File: `<user_config_dir>/driver-manager/updater.json`.
+/// Missing/corrupt file → `default()` (never an error to the UI).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdaterSettings {
+    #[serde(default = "default_true")]
+    pub auto_check: bool,
+    #[serde(default = "default_interval")]
+    pub interval_hours: u64,
+    #[serde(default)]
+    pub last_notified_keys: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_interval() -> u64 {
+    6
+}
+
+impl Default for UpdaterSettings {
+    fn default() -> Self {
+        Self { auto_check: true, interval_hours: 6, last_notified_keys: Vec::new() }
+    }
+}
+
+impl UpdaterSettings {
+    /// Clamp to [1h, 168h]; out-of-range config values can't wedge the timer.
+    pub fn clamp_interval(hours: u64) -> u64 {
+        hours.clamp(1, 168)
+    }
+
+    pub fn config_path() -> std::path::PathBuf {
+        let mut dir = glib::user_config_dir();
+        dir.push("driver-manager");
+        dir.push("updater.json");
+        dir
+    }
+
+    /// Load or default. Corrupt JSON → default (and the next save heals it).
+    pub fn load() -> Self {
+        std::fs::read_to_string(Self::config_path())
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .map(|mut s: Self| {
+                s.interval_hours = Self::clamp_interval(s.interval_hours);
+                s
+            })
+            .unwrap_or_default()
+    }
+
+    /// Save (creating parent dirs). Errors propagate to a toast, not a crash.
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(self)?)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +361,56 @@ mod tests {
     fn empty_changelog_yields_no_notes() {
         assert!(parse_changelog("").is_empty());
         assert!(parse_changelog("# Changelog\n").is_empty());
+    }
+
+    #[test]
+    fn package_update_summary_line() {
+        let u = PackageUpdate {
+            name: "akmod-nvidia".to_string(),
+            arch: "x86_64".to_string(),
+            from_evr: "3:615.71.09-2.fc44".to_string(),
+            to_evr: "3:615.71.09-3.fc44".to_string(),
+            repo: "rpmfusion-nonfree-nvidia-driver".to_string(),
+        };
+        assert_eq!(u.summary(), "3:615.71.09-2.fc44 → 3:615.71.09-3.fc44 (rpmfusion-nonfree-nvidia-driver)");
+    }
+
+    #[test]
+    fn update_set_detects_new_arrivals() {
+        let mk = |n: &str| PackageUpdate {
+            name: n.to_string(),
+            arch: "x86_64".to_string(),
+            from_evr: "1".to_string(),
+            to_evr: "2".to_string(),
+            repo: "updates".to_string(),
+        };
+        let old = vec![mk("a")];
+        let new = vec![mk("a"), mk("b")];
+        assert_eq!(UpdateSet::newly_arrived(&old, &new), vec!["b".to_string()]);
+        assert!(UpdateSet::newly_arrived(&new, &old).is_empty());
+        assert!(UpdateSet::newly_arrived(&old, &old).is_empty());
+    }
+
+    #[test]
+    fn settings_default_is_auto_check_on_6h() {
+        let s = UpdaterSettings::default();
+        assert!(s.auto_check);
+        assert_eq!(s.interval_hours, 6);
+        assert!(s.last_notified_keys.is_empty());
+    }
+
+    #[test]
+    fn settings_roundtrip_ignores_unknown_fields() {
+        let json = r#"{"auto_check":false,"interval_hours":24,"last_notified_keys":["a"],"future_field":1}"#;
+        let s: UpdaterSettings = serde_json::from_str(json).unwrap();
+        assert!(!s.auto_check);
+        assert_eq!(s.interval_hours, 24);
+    }
+
+    #[test]
+    fn interval_clamped_to_sane_range() {
+        assert_eq!(UpdaterSettings::clamp_interval(0), 1);
+        assert_eq!(UpdaterSettings::clamp_interval(1000), 168);
+        assert_eq!(UpdaterSettings::clamp_interval(12), 12);
     }
 }

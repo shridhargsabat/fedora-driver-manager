@@ -1,10 +1,11 @@
 use crate::backend::hardware::{HardwareScanner, ScanReport};
 use crate::backend::system::{RootAction, SystemBackend};
-use crate::models::{DeviceCategory, DnfTransaction, DriverPackage, DriverStatus, FirmwareItem, HardwareDevice};
+use crate::models::{DeviceCategory, DnfTransaction, DriverPackage, DriverStatus, FirmwareItem, HardwareDevice, PackageUpdate, UpdateSet, UpdaterSettings};
 use adw::prelude::*;
 use adw::{ActionRow, ExpanderRow, HeaderBar, NavigationPage, NavigationSplitView, PreferencesGroup, PreferencesPage, Toast, ToastOverlay, WindowTitle};
 use gtk4::prelude::{IsA, WidgetExt};
 use gio::prelude::ActionMapExt;
+use glib::prelude::ToVariant;
 use gtk4::{Align, Box, Button, Image, Label, Orientation, PolicyType, ScrolledWindow, Spinner};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -61,6 +62,7 @@ pub fn build_ui(app: &adw::Application) {
         ("firmware", "Firmware Updates", "software-update-available-symbolic"),
         ("history", "History and Rollback", "document-revert-symbolic"),
         ("drivers", "Available Drivers", "package-x-generic-symbolic"),
+        ("updates", "Updates", "software-update-available-symbolic"),
     ];
 
     for (id, label, icon) in &categories {
@@ -110,6 +112,7 @@ pub fn build_ui(app: &adw::Application) {
         .build();
     let menu = gio::Menu::new();
     menu.append(Some("What's New"), Some("win.whatsnew"));
+    menu.append(Some("Automatically check for updates"), Some("win.auto_check"));
     menu.append(Some("About Driver Manager"), Some("win.about"));
     menu_btn.set_menu_model(Some(&menu));
     content_header.pack_end(&menu_btn);
@@ -140,6 +143,7 @@ pub fn build_ui(app: &adw::Application) {
         refresh_btn.clone(),
         sidebar_list.clone(),
         false,
+        None,
     );
 
     // Sidebar selection handler
@@ -166,6 +170,7 @@ pub fn build_ui(app: &adw::Application) {
                 "firmware" => header_title_clone.set_title("Firmware Updates"),
                 "history" => header_title_clone.set_title("History and Rollback"),
                 "drivers" => header_title_clone.set_title("Available Drivers"),
+                "updates" => header_title_clone.set_title("Updates"),
                 _ => header_title_clone.set_title("Hardware Details"),
             }
         }
@@ -187,6 +192,7 @@ pub fn build_ui(app: &adw::Application) {
             refresh_clone2.clone(),
             sidebar_clone2.clone(),
             true,
+            None,
         );
     });
 
@@ -219,6 +225,93 @@ pub fn build_ui(app: &adw::Application) {
     }
     window.add_action(&whatsnew_action);
 
+    // --- Updater: auto-check + notifications ---
+    let settings = UpdaterSettings::load();
+    let last_keys = Rc::new(RefCell::new(settings.last_notified_keys.clone()));
+    let auto_source: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+
+    // Shared schedule: one auto refresh (with notify-on-new) via the same
+    // scan machinery as manual Refresh. Reused by the timer and toggle-ON.
+    let schedule_auto_check = {
+        let stack_c = stack.clone();
+        let devices_c = devices_state.clone();
+        let toast_c = toast_ref.clone();
+        let spinner_c = spinner.clone();
+        let refresh_c = refresh_btn.clone();
+        let sidebar_c = sidebar_list.clone();
+        let last_keys_c = last_keys.clone();
+        let app_c = app.clone();
+        Rc::new(move || {
+            let last_keys_c = last_keys_c.clone();
+            let app_c = app_c.clone();
+            let on_done: Rc<dyn Fn(Vec<String>)> = Rc::new(move |keys: Vec<String>| {
+                let last = last_keys_c.borrow().clone();
+                if let Some(body) = should_notify_update(&last, &keys) {
+                    let notification = gio::Notification::new("Driver updates available");
+                    notification.set_body(Some(&body));
+                    app_c.send_notification(Some("driver-updates"), &notification);
+                }
+                // Persist the new baseline (silent on IO error — toast would spam).
+                let mut settings = UpdaterSettings::load();
+                settings.last_notified_keys = keys.clone();
+                let _ = settings.save();
+                *last_keys_c.borrow_mut() = keys;
+            });
+            refresh_data_async(
+                stack_c.clone(),
+                devices_c.clone(),
+                toast_c.clone(),
+                spinner_c.clone(),
+                refresh_c.clone(),
+                sidebar_c.clone(),
+                false,
+                Some(on_done),
+            );
+        })
+    };
+
+    if settings.auto_check {
+        let secs = (UpdaterSettings::clamp_interval(settings.interval_hours) * 3600) as u32;
+        let tick = schedule_auto_check.clone();
+        *auto_source.borrow_mut() = Some(glib::timeout_add_seconds_local(secs, move || {
+            tick();
+            glib::ControlFlow::Continue
+        }));
+    }
+
+    let auto_check_action = gio::SimpleAction::new_stateful(
+        "auto_check",
+        None,
+        &settings.auto_check.to_variant(),
+    );
+    {
+        let auto_source_c = auto_source.clone();
+        let schedule_c = schedule_auto_check.clone();
+        auto_check_action.connect_change_state(move |action, value| {
+            let Some(enabled) = value.and_then(|v| v.get::<bool>()) else {
+                return;
+            };
+            action.set_state(&enabled.to_variant());
+            let mut settings = UpdaterSettings::load();
+            settings.auto_check = enabled;
+            let _ = settings.save(); // silent on IO error
+            if enabled {
+                // Immediate check now, then the repeating timer.
+                schedule_c();
+                let tick = schedule_c.clone();
+                let secs = (UpdaterSettings::clamp_interval(settings.interval_hours) * 3600) as u32;
+                *auto_source_c.borrow_mut() =
+                    Some(glib::timeout_add_seconds_local(secs, move || {
+                        tick();
+                        glib::ControlFlow::Continue
+                    }));
+            } else if let Some(id) = auto_source_c.borrow_mut().take() {
+                id.remove();
+            }
+        });
+    }
+    window.add_action(&auto_check_action);
+
     window.present();
 }
 
@@ -228,6 +321,7 @@ pub fn build_ui(app: &adw::Application) {
 struct ScanResults {
     report: ScanReport,
     driver_packages: Result<Vec<DriverPackage>, String>,
+    pending_updates: Result<Vec<PackageUpdate>, String>,
     firmware: Result<Vec<FirmwareItem>, String>,
     history: Result<Vec<DnfTransaction>, String>,
     laptop_model: String,
@@ -241,9 +335,17 @@ impl ScanResults {
         let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
         let driver_packages =
             SystemBackend::get_driver_packages(&candidate_refs).map_err(|e| format!("{e:#}"));
+        let pending_updates = match &driver_packages {
+            Ok(pkgs) => {
+                let names: Vec<&str> = candidates.iter().map(String::as_str).collect();
+                SystemBackend::get_pending_updates(&names, pkgs).map_err(|e| format!("{e:#}"))
+            }
+            Err(e) => Err(format!("driver query failed: {e}")),
+        };
         Self {
             report,
             driver_packages,
+            pending_updates,
             firmware: SystemBackend::get_firmware_devices().map_err(|e| format!("{e:#}")),
             history: SystemBackend::get_dnf_history(10).map_err(|e| format!("{e:#}")),
             laptop_model: SystemBackend::get_laptop_model(),
@@ -256,6 +358,7 @@ impl ScanResults {
 /// `ScanResults` via `gio::spawn_blocking`, then render back on the main
 /// thread (toasts included). The Refresh button is desensitized while a scan
 /// is in flight so scans cannot overlap.
+#[allow(clippy::too_many_arguments)] // 8 widget/state handles threaded through; a params struct is churn for one internal caller pair.
 fn refresh_data_async(
     stack: gtk4::Stack,
     devices_state: Rc<RefCell<Vec<HardwareDevice>>>,
@@ -264,6 +367,7 @@ fn refresh_data_async(
     refresh_btn: Button,
     sidebar: gtk4::ListBox,
     success_toast: bool,
+    on_updates: Option<Rc<dyn Fn(Vec<String>)>>,
 ) {
     spinner.start();
     refresh_btn.set_sensitive(false);
@@ -279,11 +383,37 @@ fn refresh_data_async(
         };
         // Gate the success toast on a genuinely clean scan: every failure
         // path already produced its own error toast in render_data.
+        let update_keys: Vec<String> = match &results.pending_updates {
+            Ok(pkgs) => pkgs.iter().map(|u| u.key()).collect(),
+            Err(_) => Vec::new(),
+        };
         let clean = results.report.errors().is_empty()
             && results.firmware.is_ok()
             && results.history.is_ok()
-            && results.driver_packages.is_ok();
-        render_data(&stack, &devices_state, &toast_overlay, results);
+            && results.driver_packages.is_ok()
+            && results.pending_updates.is_ok();
+        let update_total = render_data(&stack, &devices_state, &toast_overlay, results);
+        // Relabel the Updates sidebar row with the live count.
+        {
+            let mut child = sidebar.first_child();
+            while let Some(row) = child {
+                child = row.next_sibling();
+                let mut inner = row.first_child();
+                while let Some(w) = inner {
+                    inner = w.next_sibling();
+                    if let Ok(action) = w.clone().downcast::<ActionRow>() {
+                        if action.widget_name() == "updates" {
+                            let label = if update_total > 0 {
+                                format!("Updates ({update_total})")
+                            } else {
+                                "Updates".to_string()
+                            };
+                            action.set_title(&label);
+                        }
+                    }
+                }
+            }
+        }
         // Rebuilds reset the stack to its first child: restore whatever page
         // the sidebar has selected (also covers clicks made mid-scan).
         if let Some(selected) = sidebar.selected_row() {
@@ -294,6 +424,9 @@ fn refresh_data_async(
         }
         if success_toast && clean {
             toast_overlay.add_toast(Toast::new("Hardware re-scanned successfully"));
+        }
+        if let Some(cb) = on_updates {
+            cb(update_keys);
         }
         spinner.stop();
         refresh_btn.set_sensitive(true);
@@ -312,6 +445,44 @@ fn health_counts(devices: &[HardwareDevice]) -> (usize, usize, usize) {
         .count();
     let unknown = devices.len() - optimal - actionable;
     (optimal, actionable, unknown)
+}
+
+/// Total pending updates: package upgrades + updatable firmware items.
+fn update_count(pkgs: &[PackageUpdate], firmware: &[FirmwareItem]) -> usize {
+    pkgs.len() + firmware.iter().filter(|f| f.updatable).count()
+}
+
+/// Notification body when `current` keys contain arrivals vs `last`;
+/// None when silent (nothing pending or nothing new).
+/// Diffing goes through [`UpdateSet::newly_arrived`] so arrival semantics
+/// stay single-sourced: keys (`name:arch:to_evr`, see
+/// [`PackageUpdate::key`]) round-trip back into stubs losslessly, since
+/// `key()` only depends on name/arch/to_evr (`splitn(3)` keeps epoch
+/// colons in EVRs intact).
+fn should_notify_update(last: &[String], current: &[String]) -> Option<String> {
+    let to_stub = |k: &String| {
+        let mut parts = k.splitn(3, ':');
+        PackageUpdate {
+            name: parts.next().unwrap_or("").to_string(),
+            arch: parts.next().unwrap_or("").to_string(),
+            from_evr: String::new(),
+            to_evr: parts.next().unwrap_or("").to_string(),
+            repo: String::new(),
+        }
+    };
+    let old: Vec<PackageUpdate> = last.iter().map(to_stub).collect();
+    let new: Vec<PackageUpdate> = current.iter().map(to_stub).collect();
+    let fresh = UpdateSet::newly_arrived(&old, &new);
+    if fresh.is_empty() {
+        None
+    } else {
+        let names: Vec<&str> = fresh.iter().take(3).map(String::as_str).collect();
+        let mut body = format!("New updates: {}", names.join(", "));
+        if fresh.len() > 3 {
+            body.push_str(&format!(" (+{} more)", fresh.len() - 3));
+        }
+        Some(body)
+    }
 }
 
 /// Overview health subtitle, e.g. "23 optimal, 0 actionable, 2 unknown".
@@ -334,7 +505,7 @@ fn render_data(
     devices_state: &Rc<RefCell<Vec<HardwareDevice>>>,
     toast_overlay: &Rc<ToastOverlay>,
     results: ScanResults,
-) {
+) -> usize {
     let report = results.report;
     let scan_errors = report.errors();
     let scan_error: Option<String> = report
@@ -343,6 +514,12 @@ fn render_data(
     let scan_warnings = report.warnings.clone();
     let scanned: Vec<HardwareDevice> = report.devices;
     *devices_state.borrow_mut() = scanned.clone();
+    let pending_for_count = {
+        let pkgs: &[PackageUpdate] =
+            results.pending_updates.as_ref().map(Vec::as_slice).unwrap_or(&[]);
+        let fw: &[FirmwareItem] = results.firmware.as_ref().map(Vec::as_slice).unwrap_or(&[]);
+        update_count(pkgs, fw)
+    };
 
     for err in &scan_errors {
         toast_overlay.add_toast(Toast::new(err));
@@ -634,6 +811,8 @@ fn render_data(
     stack.add_named(&wrap_in_scrolled(hist_page), Some("history"));
 
     add_drivers_page(stack, &results.driver_packages, toast_overlay);
+    add_updates_page(stack, &results.pending_updates, &fw_result, toast_overlay);
+    pending_for_count
 }
 
 fn add_category_page(
@@ -725,6 +904,86 @@ fn add_drivers_page(
     }
     page.add(&group);
     stack.add_named(&wrap_in_scrolled(page), Some("drivers"));
+}
+
+/// "Updates" page: pending package upgrades (Install + Download each)
+/// then updatable firmware (guidance only — no one-click flashing).
+fn add_updates_page(
+    stack: &gtk4::Stack,
+    packages: &Result<Vec<PackageUpdate>, String>,
+    firmware: &Result<Vec<FirmwareItem>, String>,
+    toast_overlay: &Rc<ToastOverlay>,
+) {
+    let page = PreferencesPage::new();
+    // --- Package upgrades ---
+    let pkg_group = PreferencesGroup::builder()
+        .title("Driver package updates")
+        .description("Newer versions in your enabled repositories")
+        .build();
+    match packages {
+        Err(err) => {
+            let row = ActionRow::builder()
+                .title("Could not check for updates")
+                .subtitle(err.as_str())
+                .build();
+            row.add_prefix(&Image::from_icon_name("dialog-error-symbolic"));
+            pkg_group.add(&row);
+            toast_overlay.add_toast(Toast::new(&format!("Update check failed: {err}")));
+        }
+        Ok(list) if list.is_empty() => {
+            pkg_group.add(
+                &ActionRow::builder()
+                    .title("All driver packages are up to date")
+                    .build(),
+            );
+        }
+        Ok(list) => {
+            for update in list {
+                let row = ActionRow::builder()
+                    .title(update.name.as_str())
+                    .subtitle(update.summary())
+                    .use_markup(false)
+                    .build();
+                row.add_prefix(&Image::from_icon_name("software-update-available-symbolic"));
+                row.add_suffix(&make_download_button(&update.name, toast_overlay));
+                row.add_suffix(&make_install_button(&update.name, toast_overlay));
+                pkg_group.add(&row);
+            }
+        }
+    }
+    page.add(&pkg_group);
+    // --- Firmware updates (informational) ---
+    let fw_group = PreferencesGroup::builder()
+        .title("Firmware updates")
+        .description("Via fwupd (Linux Vendor Firmware Service)")
+        .build();
+    match firmware {
+        Err(err) => {
+            fw_group.add(
+                &ActionRow::builder()
+                    .title("Firmware status unavailable")
+                    .subtitle(err.as_str())
+                    .build(),
+            );
+        }
+        Ok(fw) => {
+            let updatable: Vec<_> = fw.iter().filter(|f| f.updatable).collect();
+            if updatable.is_empty() {
+                fw_group.add(&ActionRow::builder().title("No firmware updates available").build());
+            }
+            for item in updatable {
+                fw_group.add(
+                    &ActionRow::builder()
+                        .title(item.name.as_str())
+                        .subtitle(format!("Version {} — run `fwupdmgr update` to apply", item.version))
+                        .use_markup(false)
+                        .build(),
+                );
+            }
+        }
+    }
+    page.add(&fw_group);
+    stack.add_named(&wrap_in_scrolled(page), Some("updates"));
 }
 
 /// What's New dialog (header menu, next to About): the running version's
@@ -929,6 +1188,42 @@ fn make_package_action_button(
     action_btn
 }
 
+/// "Download {package}" button: unprivileged `dnf5 download` into the
+/// user's Downloads folder (created if missing), off the main thread.
+/// No confirm dialog (read-only op). Toast reports the RPM filename(s).
+fn make_download_button(package: &str, toast_overlay: &Rc<ToastOverlay>) -> Button {
+    let btn_label = format!("Download {package}");
+    let action_btn = Button::builder()
+        .label(&btn_label)
+        .valign(Align::Center)
+        .build();
+    let pkg_clone = package.to_string();
+    let toast_c = toast_overlay.clone();
+    action_btn.connect_clicked(move |_| {
+        let toast = toast_c.clone();
+        let p = pkg_clone.clone();
+        glib::spawn_future_local(async move {
+            let dest = glib::user_special_dir(glib::UserDirectory::Downloads)
+                .unwrap_or_else(glib::home_dir);
+            if let Err(e) = std::fs::create_dir_all(&dest) {
+                toast.add_toast(Toast::new(&format!("Cannot create {}: {}", dest.display(), e)));
+                return;
+            }
+            toast.add_toast(Toast::new(&format!("Downloading {p}...")));
+            let res = gio::spawn_blocking(move || SystemBackend::download_package(&p, &dest)).await;
+            match res {
+                Ok(Ok(files)) if !files.is_empty() => {
+                    toast.add_toast(Toast::new(&format!("Downloaded: {}", files.join(", "))));
+                }
+                Ok(Ok(_)) => toast.add_toast(Toast::new("Download finished (no new RPM found)")),
+                Ok(Err(e)) => toast.add_toast(Toast::new(&format!("Download failed: {e}"))),
+                Err(_) => toast.add_toast(Toast::new("Download task did not complete")),
+            }
+        });
+    });
+    action_btn
+}
+
 fn wrap_in_scrolled(widget: impl IsA<gtk4::Widget>) -> ScrolledWindow {
     ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
@@ -991,5 +1286,27 @@ mod tests {
     fn official_packages_get_no_hint() {
         assert_eq!(repo_hint("libva-intel-media-driver"), None);
         assert_eq!(repo_hint("something-else"), None);
+    }
+
+    #[test]
+    fn update_count_sums_packages_and_firmware() {
+        let pkgs = vec![PackageUpdate {
+            name: "a".to_string(), arch: "x86_64".to_string(),
+            from_evr: "1".to_string(), to_evr: "2".to_string(), repo: "updates".to_string(),
+        }];
+        let fw = vec![
+            FirmwareItem { name: "BIOS".to_string(), vendor: "Intel".to_string(), version: "1".to_string(), updatable: true, summary: None },
+            FirmwareItem { name: "TPM".to_string(), vendor: "Intel".to_string(), version: "1".to_string(), updatable: false, summary: None },
+        ];
+        assert_eq!(update_count(&pkgs, &fw), 2);
+    }
+
+    #[test]
+    fn notify_only_on_new_arrivals() {
+        let old = vec!["a:1".to_string()];
+        assert!(should_notify_update(&old, &[]).is_none()); // nothing pending → silent
+        assert!(should_notify_update(&old, &old).is_none()); // same set → silent
+        let body = should_notify_update(&old, &["a:1".to_string(), "b:2".to_string()]).unwrap();
+        assert!(body.contains('b'));
     }
 }
