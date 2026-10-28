@@ -153,13 +153,16 @@ fn refresh_data(
     devices_state: &Rc<RefCell<Vec<HardwareDevice>>>,
     toast_overlay: &Rc<ToastOverlay>,
 ) {
-    let scan_result = HardwareScanner::scan_all();
-    let scan_error: Option<String> = scan_result.as_ref().err().map(ToString::to_string);
-    let scanned: Vec<HardwareDevice> = scan_result.unwrap_or_default();
+    let report = HardwareScanner::scan_all_report();
+    let scan_errors = report.errors();
+    let scan_error: Option<String> = report
+        .all_backends_failed()
+        .then(|| scan_errors.join("; "));
+    let scanned: Vec<HardwareDevice> = report.devices;
     *devices_state.borrow_mut() = scanned.clone();
 
-    if let Some(err) = &scan_error {
-        toast_overlay.add_toast(Toast::new(&format!("Hardware scan failed: {err}")));
+    for err in &scan_errors {
+        toast_overlay.add_toast(Toast::new(err));
     }
 
     // Drop existing stack pages first: re-adding the same child names is

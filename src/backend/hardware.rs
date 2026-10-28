@@ -5,12 +5,52 @@ use std::process::Command;
 
 pub struct HardwareScanner;
 
+/// Outcome of a full hardware scan: devices from every backend that
+/// succeeded, plus the failure of each backend that did not. One backend
+/// failing (e.g. `lspci` missing) must not discard the other's results.
+#[derive(Debug, Default)]
+pub struct ScanReport {
+    pub devices: Vec<HardwareDevice>,
+    pub pci_error: Option<String>,
+    pub usb_error: Option<String>,
+}
+
+impl ScanReport {
+    /// All backend errors, for toasts and log lines.
+    pub fn errors(&self) -> Vec<String> {
+        [&self.pci_error, &self.usb_error]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    pub fn all_backends_failed(&self) -> bool {
+        self.pci_error.is_some() && self.usb_error.is_some()
+    }
+}
+
 impl HardwareScanner {
-    pub fn scan_all() -> Result<Vec<HardwareDevice>> {
-        let mut devices = Vec::new();
-        devices.extend(Self::scan_pci()?);
-        devices.extend(Self::scan_usb()?);
-        Ok(devices)
+    /// Scan every backend independently, collecting each backend's devices
+    /// or error without letting one failure abort the others.
+    pub fn scan_all_report() -> ScanReport {
+        Self::combine_scan_results(Self::scan_pci(), Self::scan_usb())
+    }
+
+    fn combine_scan_results(
+        pci: Result<Vec<HardwareDevice>>,
+        usb: Result<Vec<HardwareDevice>>,
+    ) -> ScanReport {
+        let mut report = ScanReport::default();
+        match pci {
+            Ok(mut devs) => report.devices.append(&mut devs),
+            Err(e) => report.pci_error = Some(format!("PCI scan failed: {e:#}")),
+        }
+        match usb {
+            Ok(mut devs) => report.devices.append(&mut devs),
+            Err(e) => report.usb_error = Some(format!("USB scan failed: {e:#}")),
+        }
+        report
     }
 
     pub fn scan_pci() -> Result<Vec<HardwareDevice>> {
@@ -369,5 +409,72 @@ mod tests {
             HardwareScanner::categorize_pci("0108", "Micron Technology Inc 2500 NVMe SSD (DRAM-less)"),
             DeviceCategory::Storage
         );
+    }
+
+    fn test_device(id: &str) -> HardwareDevice {
+        HardwareDevice {
+            id: id.to_string(),
+            name: format!("Test device {id}"),
+            vendor: "Test Vendor".to_string(),
+            vendor_id: "1234".to_string(),
+            device_id: "5678".to_string(),
+            subsystem: None,
+            category: DeviceCategory::Other,
+            current_driver: None,
+            available_modules: Vec::new(),
+            status: DriverStatus::Unknown,
+            recommendation: None,
+            package_candidate: None,
+        }
+    }
+
+    #[test]
+    fn pci_failure_still_yields_usb_results() {
+        let report = HardwareScanner::combine_scan_results(
+            Err(anyhow::anyhow!("lspci not found")),
+            Ok(vec![test_device("usb:1:2")]),
+        );
+        assert_eq!(report.devices.len(), 1);
+        assert_eq!(report.devices[0].id, "usb:1:2");
+        assert!(report.pci_error.is_some());
+        assert!(report.usb_error.is_none());
+        assert!(!report.all_backends_failed());
+    }
+
+    #[test]
+    fn usb_failure_still_yields_pci_results() {
+        let report = HardwareScanner::combine_scan_results(
+            Ok(vec![test_device("00:02.0")]),
+            Err(anyhow::anyhow!("lsusb not found")),
+        );
+        assert_eq!(report.devices.len(), 1);
+        assert_eq!(report.devices[0].id, "00:02.0");
+        assert!(report.pci_error.is_none());
+        assert!(report.usb_error.is_some());
+        assert!(!report.all_backends_failed());
+    }
+
+    #[test]
+    fn both_failures_yield_errors_and_no_devices() {
+        let report = HardwareScanner::combine_scan_results(
+            Err(anyhow::anyhow!("lspci not found")),
+            Err(anyhow::anyhow!("lsusb not found")),
+        );
+        assert!(report.devices.is_empty());
+        assert!(report.pci_error.is_some());
+        assert!(report.usb_error.is_some());
+        assert!(report.all_backends_failed());
+    }
+
+    #[test]
+    fn successful_scans_combine() {
+        let report = HardwareScanner::combine_scan_results(
+            Ok(vec![test_device("00:02.0")]),
+            Ok(vec![test_device("usb:1:2")]),
+        );
+        assert_eq!(report.devices.len(), 2);
+        assert!(report.pci_error.is_none());
+        assert!(report.usb_error.is_none());
+        assert!(!report.all_backends_failed());
     }
 }
