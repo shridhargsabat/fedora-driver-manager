@@ -55,7 +55,7 @@ appstreamcli validate --no-net %{buildroot}%{_datadir}/metainfo/io.github.shridh
 %license LICENSE
 %license LICENSE.dependencies
 %license cargo-vendor.txt
-%doc README.md
+%doc README.md CHANGELOG.md
 %{_bindir}/%{name}
 %{_datadir}/applications/io.github.shridhargsabat.DriverManager.desktop
 %{_datadir}/metainfo/io.github.shridhargsabat.DriverManager.metainfo.xml
