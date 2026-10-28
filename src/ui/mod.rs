@@ -209,7 +209,7 @@ fn refresh_data(
     // Peripherals (Camera, Input, Thunderbolt)
     let peri_page = PreferencesPage::new();
     let peri_group = PreferencesGroup::builder()
-        .title("Peripherals & Connected Devices")
+        .title("Peripherals &amp; Connected Devices")
         .build();
 
     let peri_devices: Vec<_> = scanned.iter().filter(|d| {
