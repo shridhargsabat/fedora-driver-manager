@@ -509,11 +509,8 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
 
     // Action button if actionable package candidate exists
     if let Some(ref pkg) = dev.package_candidate {
-        let btn_label = if dev.status == DriverStatus::Upgradable || dev.status == DriverStatus::Missing {
-            format!("Install {}", pkg)
-        } else {
-            format!("Verify {}", pkg)
-        };
+        // The button runs `dnf5 install -y <pkg>` as root: label it honestly.
+        let btn_label = format!("Install {pkg}");
 
         let action_btn = Button::builder()
             .label(&btn_label)
