@@ -61,6 +61,7 @@ pub fn build_ui(app: &adw::Application) {
         ("firmware", "Firmware Updates", "software-update-available-symbolic"),
         ("history", "History and Rollback", "document-revert-symbolic"),
         ("drivers", "Available Drivers", "package-x-generic-symbolic"),
+        ("changelog", "What's New", "document-open-recent-symbolic"),
     ];
 
     for (id, label, icon) in &categories {
@@ -165,6 +166,7 @@ pub fn build_ui(app: &adw::Application) {
                 "firmware" => header_title_clone.set_title("Firmware Updates"),
                 "history" => header_title_clone.set_title("History and Rollback"),
                 "drivers" => header_title_clone.set_title("Available Drivers"),
+                "changelog" => header_title_clone.set_title("What's New"),
                 _ => header_title_clone.set_title("Hardware Details"),
             }
         }
@@ -623,6 +625,7 @@ fn render_data(
     stack.add_named(&wrap_in_scrolled(hist_page), Some("history"));
 
     add_drivers_page(stack, &results.driver_packages, toast_overlay);
+    add_changelog_page(stack);
 }
 
 fn add_category_page(
@@ -713,6 +716,51 @@ fn add_drivers_page(
     }
     page.add(&group);
     stack.add_named(&wrap_in_scrolled(page), Some("drivers"));
+}
+
+/// "What's New" page: the running version's notes first (marked current),
+/// older releases as history. Content comes from embedded CHANGELOG.md;
+/// empty notes render a graceful placeholder, never a blank page.
+fn add_changelog_page(stack: &gtk4::Stack) {
+    let page = PreferencesPage::new();
+    let notes = SystemBackend::get_release_notes();
+    let current = env!("CARGO_PKG_VERSION");
+    if notes.is_empty() {
+        let group = PreferencesGroup::builder().title("Release notes").build();
+        group.add(
+            &ActionRow::builder()
+                .title("No release notes available")
+                .build(),
+        );
+        page.add(&group);
+    } else {
+        for (i, rel) in notes.iter().enumerate() {
+            let title = if rel.version == current {
+                format!("{} ({}) — this version", rel.version, rel.date)
+            } else {
+                format!("{} ({})", rel.version, rel.date)
+            };
+            let group = PreferencesGroup::builder().title(title.as_str()).build();
+            if rel.bullets.is_empty() {
+                group.add(&ActionRow::builder().title("No details recorded").build());
+            }
+            for bullet in &rel.bullets {
+                // Changelog-derived strings: never markup (file convention).
+                group.add(
+                    &ActionRow::builder()
+                        .title(bullet.as_str())
+                        .use_markup(false)
+                        .build(),
+                );
+            }
+            // Collapse history: only the current (first matching) group
+            // starts expanded — PreferencesGroups have no collapse API, so
+            // instead show all; newest-first order keeps history out of the way.
+            let _ = i;
+            page.add(&group);
+        }
+    }
+    stack.add_named(&wrap_in_scrolled(page), Some("changelog"));
 }
 
 fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> ExpanderRow {

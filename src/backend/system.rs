@@ -1,4 +1,4 @@
-use crate::models::{DnfTransaction, DriverPackage, FirmwareItem, PackageBuild};
+use crate::models::{DnfTransaction, DriverPackage, FirmwareItem, PackageBuild, ReleaseNotes, parse_changelog};
 use anyhow::Result;
 use std::process::Command;
 
@@ -186,6 +186,12 @@ impl SystemBackend {
                 }
             })
             .collect())
+    }
+
+    /// Release notes for the What's New page, compiled in from CHANGELOG.md
+    /// so dev, script, RPM, and Flatpak installs all behave identically.
+    pub fn get_release_notes() -> Vec<ReleaseNotes> {
+        parse_changelog(include_str!("../../CHANGELOG.md"))
     }
 }
 
@@ -723,5 +729,17 @@ mod tests {
     #[test]
     fn empty_request_returns_empty_without_shelling_out() {
         assert!(SystemBackend::get_driver_packages(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn embedded_changelog_parses_with_current_version_present() {
+        let notes = SystemBackend::get_release_notes();
+        assert!(!notes.is_empty(), "CHANGELOG.md must have at least one release");
+        // The running binary's own version must be documented.
+        assert!(
+            notes.iter().any(|n| n.version == env!("CARGO_PKG_VERSION")),
+            "no changelog entry for {}",
+            env!("CARGO_PKG_VERSION")
+        );
     }
 }
