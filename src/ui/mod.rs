@@ -280,7 +280,21 @@ fn refresh_data(
         .description("Hardware firmware detected via Linux Vendor Firmware Service")
         .build();
 
-    if let Ok(fw_devices) = SystemBackend::get_firmware_devices() {
+    // Distinguish "tool failed" (error row + toast) from "genuine empty
+    // result" ("none found" row) instead of rendering a silent empty group.
+    let fw_result = SystemBackend::get_firmware_devices();
+    if let Err(e) = &fw_result {
+        let err_row = ActionRow::builder()
+            .title("Firmware scan failed")
+            .subtitle(format!("fwupdmgr error: {e:#}"))
+            .build();
+        let err_icon = Image::from_icon_name("dialog-error-symbolic");
+        err_icon.set_pixel_size(16);
+        err_row.add_prefix(&err_icon);
+        fw_group.add(&err_row);
+        toast_overlay.add_toast(Toast::new(&format!("Firmware scan failed: {e:#}")));
+    }
+    if let Ok(fw_devices) = &fw_result {
         for fw in fw_devices {
             let row = ActionRow::builder()
                 .title(&fw.name)
@@ -300,6 +314,16 @@ fn refresh_data(
             }
             fw_group.add(&row);
         }
+        if fw_devices.is_empty() {
+            let empty_row = ActionRow::builder()
+                .title("No firmware devices found")
+                .subtitle("fwupd reported no devices on this system")
+                .build();
+            let info_icon = Image::from_icon_name("dialog-information-symbolic");
+            info_icon.set_pixel_size(16);
+            empty_row.add_prefix(&info_icon);
+            fw_group.add(&empty_row);
+        }
     }
     fw_page.add(&fw_group);
     stack.add_named(&wrap_in_scrolled(fw_page), Some("firmware"));
@@ -311,7 +335,19 @@ fn refresh_data(
         .description("DNF history records available for undo / rollback")
         .build();
 
-    if let Ok(transactions) = SystemBackend::get_dnf_history(10) {
+    let hist_result = SystemBackend::get_dnf_history(10);
+    if let Err(e) = &hist_result {
+        let err_row = ActionRow::builder()
+            .title("Transaction history unavailable")
+            .subtitle(format!("dnf5 error: {e:#}"))
+            .build();
+        let err_icon = Image::from_icon_name("dialog-error-symbolic");
+        err_icon.set_pixel_size(16);
+        err_row.add_prefix(&err_icon);
+        hist_group.add(&err_row);
+        toast_overlay.add_toast(Toast::new(&format!("Transaction history unavailable: {e:#}")));
+    }
+    if let Ok(transactions) = &hist_result {
         for tx in transactions {
             let row = ActionRow::builder()
                 .title(format!("Transaction #{}", tx.id))
@@ -374,6 +410,16 @@ fn refresh_data(
 
             row.add_suffix(&undo_btn);
             hist_group.add(&row);
+        }
+        if transactions.is_empty() {
+            let empty_row = ActionRow::builder()
+                .title("No package transactions found")
+                .subtitle("dnf5 history is empty")
+                .build();
+            let info_icon = Image::from_icon_name("dialog-information-symbolic");
+            info_icon.set_pixel_size(16);
+            empty_row.add_prefix(&info_icon);
+            hist_group.add(&empty_row);
         }
     }
     hist_page.add(&hist_group);
