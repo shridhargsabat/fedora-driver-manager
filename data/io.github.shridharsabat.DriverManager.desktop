@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Driver Manager
+GenericName=Driver Manager
+Comment=Hardware driver, firmware, and rollback manager for Fedora Linux
+Exec=fedora-driver-manager
+Icon=io.github.shridharsabat.DriverManager
+Terminal=false
+Type=Application
+Categories=System;Settings;HardwareSettings;
+Keywords=driver;hardware;gpu;wifi;firmware;nvidia;rollback;
+StartupNotify=true
+StartupWMClass=io.github.shridharsabat.DriverManager
+DBusActivatable=true
