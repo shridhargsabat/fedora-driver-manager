@@ -70,31 +70,37 @@ impl SystemBackend {
 
     pub fn get_dnf_history(limit: usize) -> Result<Vec<DnfTransaction>> {
         let output = Command::new("dnf5")
-            .args(["history", "list"])
+            .args(["history", "list", "--json"])
             .output()?;
 
-        let mut list = Vec::new();
         if !output.status.success() {
-            return Ok(list);
+            return Ok(Vec::new());
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines().skip(1).take(limit) {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.is_empty() {
-                continue;
-            }
-            if let Ok(id) = parts[0].parse::<u64>() {
-                list.push(DnfTransaction {
-                    id,
-                    command_line: parts[1..].join(" "),
-                    date: "Recent".to_string(),
-                    action: if parts.len() > 1 { parts[1].to_string() } else { "Transaction".to_string() },
-                });
-            }
-        }
+        Self::parse_dnf_history_json(&String::from_utf8_lossy(&output.stdout), limit)
+    }
 
-        Ok(list)
+    /// Parse `dnf5 history list --json` output (newest transaction first).
+    /// Whitespace-splitting the human-readable table corrupted fields, so the
+    /// structured form is the source of truth for id, command line and date.
+    fn parse_dnf_history_json(stdout: &str, limit: usize) -> Result<Vec<DnfTransaction>> {
+        let entries: Vec<DnfHistoryEntry> = serde_json::from_str(stdout)?;
+        Ok(entries
+            .into_iter()
+            .take(limit)
+            .map(|entry| {
+                let command_line = entry.command_line.unwrap_or_default();
+                DnfTransaction {
+                    id: entry.id,
+                    action: action_from_command_line(&command_line),
+                    date: entry
+                        .start_time
+                        .map(format_unix_time)
+                        .unwrap_or_else(|| "Unknown".to_string()),
+                    command_line,
+                }
+            })
+            .collect())
     }
 
     /// Async variant of [`Self::execute_pkexec`] that runs the blocking pkexec
@@ -123,5 +129,162 @@ impl SystemBackend {
         }
 
         Ok(stdout)
+    }
+}
+
+/// One entry of `dnf5 history list --json`. Only the fields we need are
+/// modeled; everything else is ignored for forward compatibility.
+#[derive(Debug, serde::Deserialize)]
+struct DnfHistoryEntry {
+    id: u64,
+    #[serde(default)]
+    command_line: Option<String>,
+    #[serde(default)]
+    start_time: Option<i64>,
+}
+
+/// Derive a short action label ("install", "remove", ...) from a full
+/// command line. Non-dnf invocations (e.g. `dnf5daemon-server`) keep their
+/// program name.
+fn action_from_command_line(cmd: &str) -> String {
+    let mut words = cmd.split_whitespace();
+    let program = words.next().unwrap_or("");
+    let base = program.rsplit('/').next().unwrap_or(program);
+    if matches!(base, "dnf" | "dnf5") {
+        for word in words {
+            if !word.starts_with('-') {
+                return word.to_string();
+            }
+        }
+    } else if !base.is_empty() {
+        return base.to_string();
+    }
+    "Transaction".to_string()
+}
+
+/// Format a Unix timestamp as `YYYY-MM-DD HH:MM` (UTC) without extra
+/// dependencies.
+fn format_unix_time(timestamp: i64) -> String {
+    let (year, month, day) = civil_from_days(timestamp.div_euclid(86_400));
+    let secs = timestamp.rem_euclid(86_400);
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        year,
+        month,
+        day,
+        secs / 3600,
+        (secs % 3600) / 60
+    )
+}
+
+/// Days-since-epoch to civil date (Howard Hinnant's algorithm).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097); // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32; // [1, 12]
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verbatim `dnf5 history list --json` entries captured on this machine.
+    const DNF_HISTORY_FIXTURE: &str = r#"[
+  {
+    "id": 66,
+    "command_line": "dnf reinstall -y fedora-driver-manager",
+    "start_time": 1793170896,
+    "end_time": 1793170897,
+    "user_id": 1000,
+    "status": "Ok",
+    "releasever": "44",
+    "altered_count": 2
+  },
+  {
+    "id": 65,
+    "command_line": "dnf install -y fedora-driver-manager",
+    "start_time": 1793170851,
+    "end_time": 1793170852,
+    "user_id": 1000,
+    "status": "Ok",
+    "releasever": "44",
+    "altered_count": 1
+  },
+  {
+    "id": 64,
+    "command_line": "dnf install -y gh copr-cli fedpkg cargo-rpm-macros rpm-build rpmdevtools rpmlint",
+    "start_time": 1793167025,
+    "end_time": 1793167030,
+    "user_id": 1000,
+    "status": "Ok",
+    "releasever": "44",
+    "altered_count": 209
+  }
+]"#;
+
+    #[test]
+    fn parses_id_command_line_and_date() {
+        let txs =
+            SystemBackend::parse_dnf_history_json(DNF_HISTORY_FIXTURE, 10).expect("fixture must parse");
+        assert_eq!(txs.len(), 3);
+        assert_eq!(txs[0].id, 66);
+        assert_eq!(txs[0].command_line, "dnf reinstall -y fedora-driver-manager");
+        assert_eq!(txs[0].date, "2026-10-28 07:01");
+        assert_eq!(txs[0].action, "reinstall");
+        assert_eq!(txs[1].id, 65);
+        assert_eq!(txs[1].command_line, "dnf install -y fedora-driver-manager");
+        assert_eq!(txs[1].date, "2026-10-28 07:00");
+        assert_eq!(txs[1].action, "install");
+    }
+
+    #[test]
+    fn long_commands_are_not_truncated() {
+        let txs =
+            SystemBackend::parse_dnf_history_json(DNF_HISTORY_FIXTURE, 10).expect("fixture must parse");
+        assert_eq!(
+            txs[2].command_line,
+            "dnf install -y gh copr-cli fedpkg cargo-rpm-macros rpm-build rpmdevtools rpmlint"
+        );
+        assert_eq!(txs[2].date, "2026-10-28 05:57");
+    }
+
+    #[test]
+    fn respects_limit() {
+        let txs =
+            SystemBackend::parse_dnf_history_json(DNF_HISTORY_FIXTURE, 2).expect("fixture must parse");
+        assert_eq!(txs.len(), 2);
+        assert_eq!(txs[0].id, 66);
+    }
+
+    #[test]
+    fn formats_unix_time() {
+        assert_eq!(format_unix_time(1793170896), "2026-10-28 07:01");
+        assert_eq!(format_unix_time(0), "1970-01-01 00:00");
+    }
+
+    /// Machine-local check: the real `dnf5 history list --json` output on this
+    /// system must parse. Ignored by default (needs dnf5 + system history).
+    #[test]
+    #[ignore]
+    fn live_dnf_history_parses() {
+        let txs = SystemBackend::get_dnf_history(3).expect("dnf5 must run");
+        assert!(!txs.is_empty(), "expected at least one transaction");
+        assert_ne!(txs[0].date, "Recent");
+        assert!(!txs[0].command_line.is_empty());
+    }
+
+    #[test]
+    fn derives_action_from_command_line() {
+        assert_eq!(action_from_command_line("dnf install -y foo"), "install");
+        assert_eq!(action_from_command_line("/usr/bin/dnf remove -y foo"), "remove");
+        assert_eq!(action_from_command_line("dnf5daemon-server"), "dnf5daemon-server");
+        assert_eq!(action_from_command_line(""), "Transaction");
     }
 }
