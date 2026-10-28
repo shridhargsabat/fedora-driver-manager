@@ -61,6 +61,7 @@ pub fn build_ui(app: &adw::Application) {
         ("firmware", "Firmware Updates", "software-update-available-symbolic"),
         ("history", "History and Rollback", "document-revert-symbolic"),
         ("drivers", "Available Drivers", "package-x-generic-symbolic"),
+        ("updates", "Updates", "software-update-available-symbolic"),
     ];
 
     for (id, label, icon) in &categories {
@@ -166,6 +167,7 @@ pub fn build_ui(app: &adw::Application) {
                 "firmware" => header_title_clone.set_title("Firmware Updates"),
                 "history" => header_title_clone.set_title("History and Rollback"),
                 "drivers" => header_title_clone.set_title("Available Drivers"),
+                "updates" => header_title_clone.set_title("Updates"),
                 _ => header_title_clone.set_title("Hardware Details"),
             }
         }
@@ -293,7 +295,28 @@ fn refresh_data_async(
             && results.history.is_ok()
             && results.driver_packages.is_ok()
             && results.pending_updates.is_ok();
-        render_data(&stack, &devices_state, &toast_overlay, results);
+        let update_total = render_data(&stack, &devices_state, &toast_overlay, results);
+        // Relabel the Updates sidebar row with the live count.
+        {
+            let mut child = sidebar.first_child();
+            while let Some(row) = child {
+                child = row.next_sibling();
+                let mut inner = row.first_child();
+                while let Some(w) = inner {
+                    inner = w.next_sibling();
+                    if let Ok(action) = w.clone().downcast::<ActionRow>() {
+                        if action.widget_name() == "updates" {
+                            let label = if update_total > 0 {
+                                format!("Updates ({update_total})")
+                            } else {
+                                "Updates".to_string()
+                            };
+                            action.set_title(&label);
+                        }
+                    }
+                }
+            }
+        }
         // Rebuilds reset the stack to its first child: restore whatever page
         // the sidebar has selected (also covers clicks made mid-scan).
         if let Some(selected) = sidebar.selected_row() {
@@ -349,7 +372,7 @@ fn render_data(
     devices_state: &Rc<RefCell<Vec<HardwareDevice>>>,
     toast_overlay: &Rc<ToastOverlay>,
     results: ScanResults,
-) {
+) -> usize {
     let report = results.report;
     let scan_errors = report.errors();
     let scan_error: Option<String> = report
@@ -358,6 +381,12 @@ fn render_data(
     let scan_warnings = report.warnings.clone();
     let scanned: Vec<HardwareDevice> = report.devices;
     *devices_state.borrow_mut() = scanned.clone();
+    let pending_for_count = {
+        let pkgs: &[PackageUpdate] =
+            results.pending_updates.as_ref().map(Vec::as_slice).unwrap_or(&[]);
+        let fw: &[FirmwareItem] = results.firmware.as_ref().map(Vec::as_slice).unwrap_or(&[]);
+        update_count(pkgs, fw)
+    };
 
     for err in &scan_errors {
         toast_overlay.add_toast(Toast::new(err));
@@ -649,6 +678,8 @@ fn render_data(
     stack.add_named(&wrap_in_scrolled(hist_page), Some("history"));
 
     add_drivers_page(stack, &results.driver_packages, toast_overlay);
+    add_updates_page(stack, &results.pending_updates, &fw_result, toast_overlay);
+    pending_for_count
 }
 
 fn add_category_page(
@@ -740,6 +771,86 @@ fn add_drivers_page(
     }
     page.add(&group);
     stack.add_named(&wrap_in_scrolled(page), Some("drivers"));
+}
+
+/// "Updates" page: pending package upgrades (Install + Download each)
+/// then updatable firmware (guidance only — no one-click flashing).
+fn add_updates_page(
+    stack: &gtk4::Stack,
+    packages: &Result<Vec<PackageUpdate>, String>,
+    firmware: &Result<Vec<FirmwareItem>, String>,
+    toast_overlay: &Rc<ToastOverlay>,
+) {
+    let page = PreferencesPage::new();
+    // --- Package upgrades ---
+    let pkg_group = PreferencesGroup::builder()
+        .title("Driver package updates")
+        .description("Newer versions in your enabled repositories")
+        .build();
+    match packages {
+        Err(err) => {
+            let row = ActionRow::builder()
+                .title("Could not check for updates")
+                .subtitle(err.as_str())
+                .build();
+            row.add_prefix(&Image::from_icon_name("dialog-error-symbolic"));
+            pkg_group.add(&row);
+            toast_overlay.add_toast(Toast::new(&format!("Update check failed: {err}")));
+        }
+        Ok(list) if list.is_empty() => {
+            pkg_group.add(
+                &ActionRow::builder()
+                    .title("All driver packages are up to date")
+                    .build(),
+            );
+        }
+        Ok(list) => {
+            for update in list {
+                let row = ActionRow::builder()
+                    .title(update.name.as_str())
+                    .subtitle(update.summary())
+                    .use_markup(false)
+                    .build();
+                row.add_prefix(&Image::from_icon_name("software-update-available-symbolic"));
+                row.add_suffix(&make_download_button(&update.name, toast_overlay));
+                row.add_suffix(&make_install_button(&update.name, toast_overlay));
+                pkg_group.add(&row);
+            }
+        }
+    }
+    page.add(&pkg_group);
+    // --- Firmware updates (informational) ---
+    let fw_group = PreferencesGroup::builder()
+        .title("Firmware updates")
+        .description("Via fwupd (Linux Vendor Firmware Service)")
+        .build();
+    match firmware {
+        Err(err) => {
+            fw_group.add(
+                &ActionRow::builder()
+                    .title("Firmware status unavailable")
+                    .subtitle(err.as_str())
+                    .build(),
+            );
+        }
+        Ok(fw) => {
+            let updatable: Vec<_> = fw.iter().filter(|f| f.updatable).collect();
+            if updatable.is_empty() {
+                fw_group.add(&ActionRow::builder().title("No firmware updates available").build());
+            }
+            for item in updatable {
+                fw_group.add(
+                    &ActionRow::builder()
+                        .title(item.name.as_str())
+                        .subtitle(format!("Version {} — run `fwupdmgr update` to apply", item.version))
+                        .use_markup(false)
+                        .build(),
+                );
+            }
+        }
+    }
+    page.add(&fw_group);
+    stack.add_named(&wrap_in_scrolled(page), Some("updates"));
 }
 
 /// What's New dialog (header menu, next to About): the running version's
@@ -935,6 +1046,42 @@ fn make_package_action_button(
         dialog.present();
     });
 
+    action_btn
+}
+
+/// "Download {package}" button: unprivileged `dnf5 download` into the
+/// user's Downloads folder (created if missing), off the main thread.
+/// No confirm dialog (read-only op). Toast reports the RPM filename(s).
+fn make_download_button(package: &str, toast_overlay: &Rc<ToastOverlay>) -> Button {
+    let btn_label = format!("Download {package}");
+    let action_btn = Button::builder()
+        .label(&btn_label)
+        .valign(Align::Center)
+        .build();
+    let pkg_clone = package.to_string();
+    let toast_c = toast_overlay.clone();
+    action_btn.connect_clicked(move |_| {
+        let toast = toast_c.clone();
+        let p = pkg_clone.clone();
+        glib::spawn_future_local(async move {
+            let dest = glib::user_special_dir(glib::UserDirectory::Downloads)
+                .unwrap_or_else(glib::home_dir);
+            if let Err(e) = std::fs::create_dir_all(&dest) {
+                toast.add_toast(Toast::new(&format!("Cannot create {}: {}", dest.display(), e)));
+                return;
+            }
+            toast.add_toast(Toast::new(&format!("Downloading {p}...")));
+            let res = gio::spawn_blocking(move || SystemBackend::download_package(&p, &dest)).await;
+            match res {
+                Ok(Ok(files)) if !files.is_empty() => {
+                    toast.add_toast(Toast::new(&format!("Downloaded: {}", files.join(", "))));
+                }
+                Ok(Ok(_)) => toast.add_toast(Toast::new("Download finished (no new RPM found)")),
+                Ok(Err(e)) => toast.add_toast(Toast::new(&format!("Download failed: {e}"))),
+                Err(_) => toast.add_toast(Toast::new("Download task did not complete")),
+            }
+        });
+    });
     action_btn
 }
 
