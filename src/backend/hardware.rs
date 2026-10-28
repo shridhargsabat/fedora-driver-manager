@@ -22,6 +22,10 @@ pub struct ScanReport {
     pub devices: Vec<HardwareDevice>,
     pub pci_error: Option<String>,
     pub usb_error: Option<String>,
+    /// Format-mismatch warnings: a backend printed output none of our
+    /// patterns matched (localized/older tool), so its results are
+    /// Unknown rather than Optimal.
+    pub warnings: Vec<String>,
 }
 
 impl ScanReport {
@@ -39,11 +43,33 @@ impl ScanReport {
     }
 }
 
+/// Parsed backend output: the recognized devices plus a format-mismatch
+/// warning when the tool printed content none of our patterns matched.
+#[derive(Debug)]
+pub struct ParseOutcome {
+    pub devices: Vec<HardwareDevice>,
+    pub warning: Option<String>,
+}
+
 impl HardwareScanner {
     /// Scan every backend independently, collecting each backend's devices
     /// or error without letting one failure abort the others.
     pub fn scan_all_report() -> ScanReport {
-        Self::combine_scan_results(Self::scan_pci(), Self::scan_usb())
+        let pci = Self::scan_pci();
+        let usb = Self::scan_usb();
+        let mut warnings = Vec::new();
+        for parsed in [&pci, &usb].into_iter().flatten() {
+            warnings.extend(parsed.warning.clone());
+        }
+        for warning in &warnings {
+            log::warn!("{warning}");
+        }
+        let mut report = Self::combine_scan_results(
+            pci.map(|parsed| parsed.devices),
+            usb.map(|parsed| parsed.devices),
+        );
+        report.warnings = warnings;
+        report
     }
 
     fn combine_scan_results(
@@ -62,13 +88,29 @@ impl HardwareScanner {
         report
     }
 
-    pub fn scan_pci() -> Result<Vec<HardwareDevice>> {
+    /// Non-empty tool output with zero recognized device lines means our
+    /// patterns do not cover this format (localized/older/newer tool):
+    /// warn so callers treat the backend as Unknown instead of Optimal.
+    /// Genuine-empty output (and recognized-but-skipped lines such as USB
+    /// root hubs) produce no warning.
+    fn format_mismatch_warning(tool: &str, stdout: &str, recognized: usize) -> Option<String> {
+        let has_content = stdout.lines().any(|line| !line.trim().is_empty());
+        if recognized == 0 && has_content {
+            Some(format!(
+                "{tool} output matched no known device lines; format may be localized or unsupported (treating as unknown)"
+            ))
+        } else {
+            None
+        }
+    }
+
+    pub fn scan_pci() -> Result<ParseOutcome> {
         let output = Command::new("lspci").arg("-nnk").output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         Self::parse_pci_output(&stdout)
     }
 
-    fn parse_pci_output(stdout: &str) -> Result<Vec<HardwareDevice>> {
+    fn parse_pci_output(stdout: &str) -> Result<ParseOutcome> {
         let dev_re = Regex::new(
             r"^([0-9a-f:.]+)\s+([^\[]+?)\s+\[([0-9a-f]{4})\]:\s+(.+?)\s+\[([0-9a-f]{4}):([0-9a-f]{4})\]",
         )?;
@@ -164,26 +206,36 @@ impl HardwareScanner {
             &mut devices,
         );
 
-        Ok(devices)
+        // Every `dev_re` match above flushes exactly one device, so the device
+        // count doubles as the recognized-line count here.
+        let warning = Self::format_mismatch_warning("lspci", stdout, devices.len());
+        Ok(ParseOutcome { devices, warning })
     }
 
-    pub fn scan_usb() -> Result<Vec<HardwareDevice>> {
+    pub fn scan_usb() -> Result<ParseOutcome> {
         let output = Command::new("lsusb").output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let usb_re = Regex::new(r"^Bus\s+(\d+)\s+Device\s+(\d+):\s+ID\s+([0-9a-f]{4}):([0-9a-f]{4})\s*(.*)$")?;
+        Self::parse_usb_output(&stdout)
+    }
+
+    fn parse_usb_output(stdout: &str) -> Result<ParseOutcome> {
+        // Case-insensitive: some lsusb builds/locales emit uppercase hex.
+        let usb_re = Regex::new(r"(?i)^Bus\s+(\d+)\s+Device\s+(\d+):\s+ID\s+([0-9a-f]{4}):([0-9a-f]{4})\s*(.*)$")?;
 
         let mut devices = Vec::new();
+        let mut recognized = 0usize;
 
         for line in stdout.lines() {
             if let Some(caps) = usb_re.captures(line) {
+                recognized += 1;
                 let bus = &caps[1];
                 let dev = &caps[2];
                 let v_id = &caps[3];
                 let d_id = &caps[4];
                 let name = caps[5].trim();
 
-                // Skip root hubs
-                if v_id == "1d6b" {
+                // Skip root hubs (case-insensitive: IDs may be uppercase hex).
+                if v_id.eq_ignore_ascii_case("1d6b") {
                     continue;
                 }
 
@@ -216,7 +268,10 @@ impl HardwareScanner {
             }
         }
 
-        Ok(devices)
+        // Recognized-but-skipped root hubs count as recognized: hub-only
+        // output is genuine-empty, not a format mismatch.
+        let warning = Self::format_mismatch_warning("lsusb", stdout, recognized);
+        Ok(ParseOutcome { devices, warning })
     }
 
     fn categorize_pci(class_code: &str, name: &str) -> DeviceCategory {
@@ -357,6 +412,7 @@ mod tests {
     fn category_of(fixture: &str, slot: &str) -> DeviceCategory {
         HardwareScanner::parse_pci_output(fixture)
             .expect("fixture must parse")
+            .devices
             .into_iter()
             .find(|d| d.id == slot)
             .unwrap_or_else(|| panic!("slot {slot} missing from fixture"))
@@ -549,5 +605,67 @@ mod tests {
         );
         assert_eq!(status, DriverStatus::Optimal);
         assert_eq!(pkg, None);
+    }
+
+    /// `lspci` output in a shape our patterns do not cover (no `[vvvv:dddd]`
+    /// IDs, as with localized or very old versions): non-empty yet zero
+    /// matched lines must raise a format warning, not parse as "no hardware".
+    const LSPCI_UNRECOGNIZED_FIXTURE: &str = "Peripherique VGA compatible : Intel Corporation UHD Graphics (rev 04)\nPont PCI : Intel Corporation Raptor Lake PCI Express Graphics Port\n";
+
+    const LSUSB_UPPERCASE_FIXTURE: &str = "Bus 001 Device 002: ID 046D:C52B Logitech USB Receiver\nBus 001 Device 001: ID 1D6B:0002 Linux Foundation 2.0 root hub\n";
+
+    const LSUSB_UNRECOGNIZED_FIXTURE: &str = "Peripheriques USB :\nquelque chose d'inattendu\n";
+
+    #[test]
+    fn unrecognized_lspci_output_yields_format_warning() {
+        let outcome =
+            HardwareScanner::parse_pci_output(LSPCI_UNRECOGNIZED_FIXTURE).expect("parse must not fail");
+        assert!(outcome.devices.is_empty());
+        assert!(outcome.warning.is_some(), "expected a format-mismatch warning");
+    }
+
+    #[test]
+    fn empty_pci_output_yields_no_warning() {
+        for input in ["", "  \n\n"] {
+            let outcome = HardwareScanner::parse_pci_output(input).expect("parse must not fail");
+            assert!(outcome.devices.is_empty());
+            assert!(outcome.warning.is_none(), "empty input is genuine-empty, not a mismatch");
+        }
+    }
+
+    #[test]
+    fn normal_pci_output_yields_no_warning() {
+        let outcome =
+            HardwareScanner::parse_pci_output(LSPCI_FIXTURE).expect("fixture must parse");
+        assert!(!outcome.devices.is_empty());
+        assert!(outcome.warning.is_none());
+    }
+
+    #[test]
+    fn usb_ids_match_case_insensitively() {
+        let outcome =
+            HardwareScanner::parse_usb_output(LSUSB_UPPERCASE_FIXTURE).expect("fixture must parse");
+        assert!(outcome.warning.is_none());
+        assert_eq!(outcome.devices.len(), 1, "uppercase root hub must still be skipped");
+        assert_eq!(outcome.devices[0].vendor_id, "046D");
+        assert_eq!(outcome.devices[0].device_id, "C52B");
+    }
+
+    #[test]
+    fn root_hub_only_usb_output_yields_no_warning() {
+        let outcome = HardwareScanner::parse_usb_output(
+            "Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub\n",
+        )
+        .expect("parse must not fail");
+        assert!(outcome.devices.is_empty());
+        assert!(outcome.warning.is_none(), "recognized hubs are genuine-empty");
+    }
+
+    #[test]
+    fn unrecognized_usb_output_yields_warning() {
+        let outcome =
+            HardwareScanner::parse_usb_output(LSUSB_UNRECOGNIZED_FIXTURE).expect("parse must not fail");
+        assert!(outcome.devices.is_empty());
+        assert!(outcome.warning.is_some(), "expected a format-mismatch warning");
     }
 }

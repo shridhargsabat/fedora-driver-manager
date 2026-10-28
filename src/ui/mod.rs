@@ -158,11 +158,15 @@ fn refresh_data(
     let scan_error: Option<String> = report
         .all_backends_failed()
         .then(|| scan_errors.join("; "));
+    let scan_warnings = report.warnings.clone();
     let scanned: Vec<HardwareDevice> = report.devices;
     *devices_state.borrow_mut() = scanned.clone();
 
     for err in &scan_errors {
         toast_overlay.add_toast(Toast::new(err));
+    }
+    for warning in &scan_warnings {
+        toast_overlay.add_toast(Toast::new(warning));
     }
 
     // Drop existing stack pages first: re-adding the same child names is
@@ -221,16 +225,30 @@ fn refresh_data(
                 "dialog-question-symbolic",
             ),
         }
-    } else if action_count == 0 {
+    } else if action_count == 0 && scan_errors.is_empty() && scan_warnings.is_empty() {
         (
             "All devices operating optimally".to_string(),
             format!("{optimal_count} optimal, {action_count} actionable"),
             "emblem-ok-symbolic",
         )
     } else {
+        // Partial scan failures and format warnings count against Optimal:
+        // part of the hardware state is Unknown.
+        let mut notes = Vec::new();
+        if !scan_errors.is_empty() {
+            notes.push("partial scan failure");
+        }
+        if !scan_warnings.is_empty() {
+            notes.push("output format warnings");
+        }
+        let suffix = if notes.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", notes.join(", "))
+        };
         (
             "Updates or attention recommended".to_string(),
-            format!("{optimal_count} optimal, {action_count} actionable"),
+            format!("{optimal_count} optimal, {action_count} actionable{suffix}"),
             "dialog-warning-symbolic",
         )
     };
