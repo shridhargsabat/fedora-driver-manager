@@ -8,16 +8,16 @@ echo "==> Installing executable to /usr/local/bin..."
 sudo install -Dm755 target/release/fedora-driver-manager /usr/local/bin/fedora-driver-manager
 
 echo "==> Installing desktop launcher..."
-sudo install -Dm644 data/io.github.shridharsabat.DriverManager.desktop /usr/local/share/applications/io.github.shridharsabat.DriverManager.desktop
+sudo install -Dm644 data/io.github.shridhargsabat.DriverManager.desktop /usr/local/share/applications/io.github.shridhargsabat.DriverManager.desktop
 
 echo "==> Installing AppStream metadata..."
-sudo install -Dm644 data/io.github.shridharsabat.DriverManager.metainfo.xml /usr/local/share/metainfo/io.github.shridharsabat.DriverManager.metainfo.xml
+sudo install -Dm644 data/io.github.shridhargsabat.DriverManager.metainfo.xml /usr/local/share/metainfo/io.github.shridhargsabat.DriverManager.metainfo.xml
 
 echo "==> Installing icon..."
-sudo install -Dm644 data/io.github.shridharsabat.DriverManager.svg /usr/local/share/icons/hicolor/scalable/apps/io.github.shridharsabat.DriverManager.svg
+sudo install -Dm644 data/io.github.shridhargsabat.DriverManager.svg /usr/local/share/icons/hicolor/scalable/apps/io.github.shridhargsabat.DriverManager.svg
 
 echo "==> Installing PolicyKit action policy..."
-sudo install -Dm644 data/io.github.shridharsabat.DriverManager.policy /usr/share/polkit-1/actions/io.github.shridharsabat.DriverManager.policy
+sudo install -Dm644 data/io.github.shridhargsabat.DriverManager.policy /usr/share/polkit-1/actions/io.github.shridhargsabat.DriverManager.policy
 
 echo "==> Updating desktop database..."
 sudo update-desktop-database /usr/local/share/applications || true

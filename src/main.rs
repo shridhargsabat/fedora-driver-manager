@@ -4,7 +4,7 @@ mod ui;
 
 use adw::prelude::*;
 
-const APP_ID: &str = "io.github.shridharsabat.DriverManager";
+const APP_ID: &str = "io.github.shridhargsabat.DriverManager";
 
 fn main() {
     env_logger::init();

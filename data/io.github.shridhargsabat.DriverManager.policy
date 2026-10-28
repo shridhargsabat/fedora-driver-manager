@@ -4,9 +4,9 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
   <vendor>Driver Manager</vendor>
-  <vendor_url>https://github.com/shridharsabat/fedora-driver-manager</vendor_url>
+  <vendor_url>https://github.com/shridhargsabat/fedora-driver-manager</vendor_url>
 
-  <action id="io.github.shridharsabat.DriverManager.manage">
+  <action id="io.github.shridhargsabat.DriverManager.manage">
     <description>Manage hardware drivers and firmware transactions</description>
     <message>Authentication is required to install, remove, or rollback drivers</message>
     <defaults>

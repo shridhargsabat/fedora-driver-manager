@@ -2,7 +2,7 @@
 
 A modern, native hardware driver, firmware, and rollback manager for **Fedora Workstation**, built in Rust using GTK 4 and Libadwaita.
 
-![Fedora Driver Manager](data/io.github.shridharsabat.DriverManager.svg)
+![Fedora Driver Manager](data/io.github.shridhargsabat.DriverManager.svg)
 
 ---
 

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.shridharsabat.DriverManager</id>
+  <id>io.github.shridhargsabat.DriverManager</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>Driver Manager</name>
@@ -19,8 +19,8 @@
   <developer>
     <name>Shridhar Sabat</name>
   </developer>
-  <launchable type="desktop-id">io.github.shridharsabat.DriverManager.desktop</launchable>
-  <icon type="stock">io.github.shridharsabat.DriverManager</icon>
+  <launchable type="desktop-id">io.github.shridhargsabat.DriverManager.desktop</launchable>
+  <icon type="stock">io.github.shridhargsabat.DriverManager</icon>
   <categories>
     <category>System</category>
   </categories>
@@ -33,21 +33,21 @@
     <keyword>nvidia</keyword>
     <keyword>rollback</keyword>
   </keywords>
-  <url type="homepage">https://github.com/shridharsabat/fedora-driver-manager</url>
-  <url type="bugtracker">https://github.com/shridharsabat/fedora-driver-manager/issues</url>
-  <url type="help">https://github.com/shridharsabat/fedora-driver-manager#readme</url>
+  <url type="homepage">https://github.com/shridhargsabat/fedora-driver-manager</url>
+  <url type="bugtracker">https://github.com/shridhargsabat/fedora-driver-manager/issues</url>
+  <url type="help">https://github.com/shridhargsabat/fedora-driver-manager#readme</url>
   <provides>
     <binary>fedora-driver-manager</binary>
-    <dbus type="application">io.github.shridharsabat.DriverManager</dbus>
+    <dbus type="application">io.github.shridhargsabat.DriverManager</dbus>
   </provides>
   <screenshots>
     <screenshot type="default">
       <caption>Hardware overview with driver recommendations</caption>
-      <image>https://raw.githubusercontent.com/shridharsabat/fedora-driver-manager/master/screenshots/overview.png</image>
+      <image>https://raw.githubusercontent.com/shridhargsabat/fedora-driver-manager/master/screenshots/overview.png</image>
     </screenshot>
     <screenshot>
       <caption>Firmware status and transaction rollback</caption>
-      <image>https://raw.githubusercontent.com/shridharsabat/fedora-driver-manager/master/screenshots/firmware.png</image>
+      <image>https://raw.githubusercontent.com/shridhargsabat/fedora-driver-manager/master/screenshots/firmware.png</image>
     </screenshot>
   </screenshots>
   <releases>
