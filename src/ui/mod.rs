@@ -56,7 +56,7 @@ pub fn build_ui(app: &adw::Application) {
             .title(*label)
             .use_markup(false)
             .build();
-        let prefix_icon = Image::from_icon_name(*icon);
+        let prefix_icon = Image::from_icon_name(icon);
         prefix_icon.set_pixel_size(16);
         row.add_prefix(&prefix_icon);
         row.set_widget_name(id);
@@ -323,7 +323,7 @@ fn refresh_data(
         for fw in fw_devices {
             let row = ActionRow::builder()
                 .title(&fw.name)
-                .subtitle(&format!("Vendor: {} | Version: {}", fw.vendor, fw.version))
+                .subtitle(format!("Vendor: {} | Version: {}", fw.vendor, fw.version))
                 .use_markup(false)
                 .build();
             let fw_icon = Image::from_icon_name("system-software-update-symbolic");
@@ -491,7 +491,7 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
     // module lists): keep markup off so device strings render literally.
     let expander = ExpanderRow::builder()
         .title(&dev.name)
-        .subtitle(&format!(
+        .subtitle(format!(
             "Driver: {} • Status: {}",
             dev.current_driver.as_deref().unwrap_or("None (Subsystem managed)"),
             dev.status.label()
@@ -521,7 +521,7 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
 
     let id_row = ActionRow::builder()
         .title("Hardware Identifier")
-        .subtitle(&format!("Vendor: [0x{}] Device: [0x{}] Slot: {}", dev.vendor_id, dev.device_id, dev.id))
+        .subtitle(format!("Vendor: [0x{}] Device: [0x{}] Slot: {}", dev.vendor_id, dev.device_id, dev.id))
         .use_markup(false)
         .build();
     let id_icon = Image::from_icon_name("preferences-system-details-symbolic");
@@ -532,7 +532,7 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
     if !dev.available_modules.is_empty() {
         let mod_row = ActionRow::builder()
             .title("Compatible Kernel Modules")
-            .subtitle(&dev.available_modules.join(", "))
+            .subtitle(dev.available_modules.join(", "))
             .use_markup(false)
             .build();
         let mod_icon = Image::from_icon_name("system-run-symbolic");
