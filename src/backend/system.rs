@@ -209,15 +209,25 @@ impl SystemBackend {
     pub fn execute_root(action: &RootAction) -> Result<String> {
         // Absolute path: never resolve a setuid-root helper via PATH.
         let output = Command::new("/usr/bin/pkexec").args(action.argv()).output()?;
+        Self::root_output_to_result(&output)
+    }
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        if !output.status.success() {
-            anyhow::bail!("Command failed: {}", stderr);
+    /// Split from [`Self::execute_root`] for testability. On failure the
+    /// pkexec exit code (126/127 carry meaning) is part of the error,
+    /// mirroring [`Self::ensure_command_success`].
+    fn root_output_to_result(output: &std::process::Output) -> Result<String> {
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
         }
-
-        Ok(stdout)
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        match output.status.code() {
+            Some(code) if !stderr.is_empty() => {
+                anyhow::bail!("pkexec failed with exit code {code}: {stderr}")
+            }
+            Some(code) => anyhow::bail!("pkexec failed with exit code {code}"),
+            None => anyhow::bail!("pkexec terminated by signal"),
+        }
     }
 }
 
@@ -557,5 +567,33 @@ mod tests {
             "/usr/bin/dnf5"
         );
         assert_eq!(RootAction::history_undo(66).argv()[0], "/usr/bin/dnf5");
+    }
+
+    #[test]
+    fn root_success_returns_stdout() {
+        let out = test_output(0, "installed\n", "");
+        assert_eq!(
+            SystemBackend::root_output_to_result(&out).expect("success must be Ok"),
+            "installed\n"
+        );
+    }
+
+    #[test]
+    fn root_failure_includes_exit_code_and_stderr() {
+        let out = test_output(126, "", "cannot execute binary");
+        let err = SystemBackend::root_output_to_result(&out).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("pkexec"), "missing tool name: {msg}");
+        assert!(msg.contains("126"), "missing exit code: {msg}");
+        assert!(msg.contains("cannot execute binary"), "missing stderr: {msg}");
+    }
+
+    #[test]
+    fn root_failure_without_stderr_still_reports_code() {
+        let out = test_output(127, "", "");
+        let err = SystemBackend::root_output_to_result(&out).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("pkexec"), "missing tool name: {msg}");
+        assert!(msg.contains("127"), "missing exit code: {msg}");
     }
 }
