@@ -310,7 +310,14 @@ fn refresh_data(
                         let toast = toast.clone();
                         glib::spawn_future_local(async move {
                             toast.add_toast(Toast::new(&format!("Requesting pkexec to undo transaction #{}...", tx_id)));
-                            let res = SystemBackend::execute_pkexec(&["dnf5", "history", "undo", "-y", &tx_id.to_string()]);
+                            let res = SystemBackend::execute_pkexec_async(vec![
+                                "dnf5".to_string(),
+                                "history".to_string(),
+                                "undo".to_string(),
+                                "-y".to_string(),
+                                tx_id.to_string(),
+                            ])
+                            .await;
                             match res {
                                 Ok(_) => toast.add_toast(Toast::new(&format!("Transaction #{} undone successfully", tx_id))),
                                 Err(e) => toast.add_toast(Toast::new(&format!("Undo failed: {}", e))),
@@ -431,7 +438,13 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
             let p = pkg_clone.clone();
             glib::spawn_future_local(async move {
                 toast.add_toast(Toast::new(&format!("Running dnf5 install for {}...", p)));
-                let res = SystemBackend::execute_pkexec(&["dnf5", "install", "-y", &p]);
+                let res = SystemBackend::execute_pkexec_async(vec![
+                    "dnf5".to_string(),
+                    "install".to_string(),
+                    "-y".to_string(),
+                    p.clone(),
+                ])
+                .await;
                 match res {
                     Ok(_) => toast.add_toast(Toast::new(&format!("{} installed successfully!", p))),
                     Err(e) => toast.add_toast(Toast::new(&format!("Failed: {}", e))),

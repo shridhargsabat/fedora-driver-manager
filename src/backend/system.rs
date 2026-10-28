@@ -97,6 +97,19 @@ impl SystemBackend {
         Ok(list)
     }
 
+    /// Async variant of [`Self::execute_pkexec`] that runs the blocking pkexec
+    /// subprocess on a worker thread, keeping the GTK main thread responsive.
+    /// Callers still `await` it from the main thread, so result toasts behave
+    /// exactly as before.
+    pub async fn execute_pkexec_async(args: Vec<String>) -> Result<String> {
+        gio::spawn_blocking(move || {
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            Self::execute_pkexec(&refs)
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("pkexec background task did not complete"))?
+    }
+
     pub fn execute_pkexec(args: &[&str]) -> Result<String> {
         let output = Command::new("pkexec")
             .args(args)
