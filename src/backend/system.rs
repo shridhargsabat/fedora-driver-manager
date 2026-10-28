@@ -61,6 +61,21 @@ impl SystemBackend {
 
         if let Some(devices) = val.get("Devices").and_then(|d| d.as_array()) {
             for dev in devices {
+                // Skip entries with neither Name nor Vendor (e.g. the GPIO
+                // plugin device): they would render as meaningless
+                // "Unknown Device / Unknown Vendor / N/A" rows.
+                let has_name = dev
+                    .get("Name")
+                    .and_then(|n| n.as_str())
+                    .is_some_and(|s| !s.trim().is_empty());
+                let has_vendor = dev
+                    .get("Vendor")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.trim().is_empty());
+                if !has_name && !has_vendor {
+                    continue;
+                }
+
                 let name = dev.get("Name").and_then(|n| n.as_str()).unwrap_or("Unknown Device");
                 let vendor = dev.get("Vendor").and_then(|v| v.as_str()).unwrap_or("Unknown Vendor");
                 let version = dev.get("Version").and_then(|v| v.as_str()).unwrap_or("N/A");
@@ -384,5 +399,47 @@ mod tests {
     fn missing_devices_key_is_ok_empty() {
         let items = SystemBackend::parse_firmware_json(r#"{}"#).expect("missing key must parse");
         assert!(items.is_empty());
+    }
+
+    /// fwupd entries with neither Name nor Vendor (e.g. the GPIO plugin
+    /// device) carry no displayable identity and must be filtered out.
+    const FWUPD_NAMELESS_FIXTURE: &str = r#"{
+  "Devices": [
+    {
+      "Name": "System Firmware",
+      "Vendor": "Lenovo",
+      "Version": "1.45",
+      "Flags": ["updatable"]
+    },
+    {
+      "Plugin": "gpio",
+      "Flags": ["internal"],
+      "Guid": ["[UUID_PLACEHOLDER_1]"]
+    },
+    {
+      "Name": "  ",
+      "Vendor": "",
+      "Version": "0.0.1"
+    }
+  ]
+}"#;
+
+    #[test]
+    fn nameless_firmware_entries_are_filtered() {
+        let items =
+            SystemBackend::parse_firmware_json(FWUPD_NAMELESS_FIXTURE).expect("fixture must parse");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "System Firmware");
+        assert_eq!(items[0].vendor, "Lenovo");
+    }
+
+    #[test]
+    fn named_but_vendorless_firmware_entries_are_kept() {
+        // The NVMe SSD entry in FWUPD_FIXTURE has a Name but no Vendor or
+        // Version: still identifiable, so it must survive filtering.
+        let items = SystemBackend::parse_firmware_json(FWUPD_FIXTURE).expect("fixture must parse");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].name, "NVMe SSD");
+        assert_eq!(items[1].vendor, "Unknown Vendor");
     }
 }
