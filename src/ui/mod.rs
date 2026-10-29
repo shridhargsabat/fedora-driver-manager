@@ -898,14 +898,16 @@ fn add_drivers_page(
                 let row = ActionRow::builder()
                     .title(pkg.name.as_str())
                     .subtitle(pkg.status_text().as_str())
+                    .title_lines(1)
+                    .subtitle_lines(1)
                     .use_markup(false)
                     .build();
                 row.add_prefix(&Image::from_icon_name("package-x-generic-symbolic"));
                 if pkg.installed_evr.is_some() {
                     row.add_suffix(&Image::from_icon_name("emblem-ok-symbolic"));
-                    row.add_suffix(&make_reinstall_button(&pkg.name, toast_overlay));
+                    row.add_suffix(&make_reinstall_button(&pkg.name, toast_overlay, true));
                 } else if pkg.preferred_available().is_some() {
-                    row.add_suffix(&make_install_button(&pkg.name, toast_overlay));
+                    row.add_suffix(&make_install_button(&pkg.name, toast_overlay, true));
                 } else if let Some(hint) = repo_hint(&pkg.name) {
                     let hint_row = ActionRow::builder().title(hint).build();
                     group.add(&row);
@@ -950,13 +952,15 @@ fn add_updates_page(
         Ok(Some(update)) => {
             let row = ActionRow::builder()
                 .title("Driver Manager")
-                .subtitle(update.summary())
+                .subtitle(format!("{}: {}", update.name, update.summary()))
+                .title_lines(1)
+                .subtitle_lines(1)
                 .use_markup(false)
                 .build();
             row.add_prefix(&Image::from_icon_name("software-update-urgent-symbolic"));
-            row.add_suffix(&make_download_button(&update.name, toast_overlay));
+            row.add_suffix(&make_download_button(&update.name, toast_overlay, true));
             // `dnf5 install` upgrades an installed package to latest: reuse it.
-            row.add_suffix(&make_install_button(&update.name, toast_overlay));
+            row.add_suffix(&make_install_button(&update.name, toast_overlay, true));
             app_group.add(&row);
         }
     }
@@ -988,11 +992,13 @@ fn add_updates_page(
                 let row = ActionRow::builder()
                     .title(update.name.as_str())
                     .subtitle(update.summary())
+                    .title_lines(1)
+                    .subtitle_lines(1)
                     .use_markup(false)
                     .build();
                 row.add_prefix(&Image::from_icon_name("software-update-available-symbolic"));
-                row.add_suffix(&make_download_button(&update.name, toast_overlay));
-                row.add_suffix(&make_install_button(&update.name, toast_overlay));
+                row.add_suffix(&make_download_button(&update.name, toast_overlay, true));
+                row.add_suffix(&make_install_button(&update.name, toast_overlay, true));
                 pkg_group.add(&row);
             }
         }
@@ -1141,7 +1147,7 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
 
     // Action button if actionable package candidate exists
     if let Some(ref pkg) = dev.package_candidate {
-        expander.add_suffix(&make_install_button(pkg, toast_overlay));
+        expander.add_suffix(&make_install_button(pkg, toast_overlay, false));
     }
 
     expander
@@ -1150,12 +1156,12 @@ fn build_device_row(dev: &HardwareDevice, toast_overlay: &Rc<ToastOverlay>) -> E
 /// "Install {package}" button with destructive confirmation dialog.
 /// Shared by device rows and the Available Drivers page; the flow is:
 /// confirm -> `RootAction::dnf_install` validation -> `execute_root_async` -> toast.
-fn make_install_button(package: &str, toast_overlay: &Rc<ToastOverlay>) -> Button {
-    make_package_action_button(package, toast_overlay, false)
+fn make_install_button(package: &str, toast_overlay: &Rc<ToastOverlay>, short: bool) -> Button {
+    make_package_action_button(package, toast_overlay, false, short)
 }
 
-fn make_reinstall_button(package: &str, toast_overlay: &Rc<ToastOverlay>) -> Button {
-    make_package_action_button(package, toast_overlay, true)
+fn make_reinstall_button(package: &str, toast_overlay: &Rc<ToastOverlay>, short: bool) -> Button {
+    make_package_action_button(package, toast_overlay, true, short)
 }
 
 /// Install/Reinstall button with destructive confirmation dialog.
@@ -1165,12 +1171,14 @@ fn make_package_action_button(
     package: &str,
     toast_overlay: &Rc<ToastOverlay>,
     reinstall: bool,
+    short: bool,
 ) -> Button {
     let verb = if reinstall { "Reinstall" } else { "Install" };
     let dnf_cmd = if reinstall { "reinstall" } else { "install" };
     let done_word = if reinstall { "reinstalled" } else { "installed" };
     // The button runs `dnf5 {install,reinstall} -y <pkg>` as root: label it honestly.
-    let btn_label = format!("{verb} {package}");
+    // Short labels where the row title already names the package (keeps rows compact).
+    let btn_label = if short { verb.to_string() } else { format!("{verb} {package}") };
 
     let action_btn = Button::builder()
         .label(&btn_label)
@@ -1237,8 +1245,8 @@ fn make_package_action_button(
 /// "Download {package}" button: unprivileged `dnf5 download` into the
 /// user's Downloads folder (created if missing), off the main thread.
 /// No confirm dialog (read-only op). Toast reports the RPM filename(s).
-fn make_download_button(package: &str, toast_overlay: &Rc<ToastOverlay>) -> Button {
-    let btn_label = format!("Download {package}");
+fn make_download_button(package: &str, toast_overlay: &Rc<ToastOverlay>, short: bool) -> Button {
+    let btn_label = if short { "Download".to_string() } else { format!("Download {package}") };
     let action_btn = Button::builder()
         .label(&btn_label)
         .valign(Align::Center)
