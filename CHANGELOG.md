@@ -3,6 +3,11 @@
 All notable changes to Driver Manager. Format: `## [version] - date`
 followed by `- bullet` lines (parsed by the in-app What's New page).
 
+## [0.4.1] - 2026-10-29
+
+- Compact update rows: short action labels, single-line titles
+- Live install progress dialog with streaming dnf output (button locked while running)
+
 ## [0.4.0] - 2026-10-29
 
 - Self-update check: Driver Manager updates appear in the Updates page with Install/Download

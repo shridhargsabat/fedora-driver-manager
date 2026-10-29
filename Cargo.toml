@@ -1,6 +1,6 @@
 [package]
 name = "fedora-driver-manager"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Comprehensive hardware driver and firmware manager for Fedora Workstation"
 authors = ["Shridhar Sabat"]
