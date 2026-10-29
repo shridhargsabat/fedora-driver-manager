@@ -15,6 +15,11 @@
    `-x.y.z-` name. Verify gtk4+libadwaita present.
 6. Fresh SRPM (`rpmbuild -bs`), `copr-cli build` (f44 + rawhide),
    watch to green, `dnf upgrade`, `rpm -V` clean.
+   VERIFY the new version actually reached repo metadata afterwards:
+   `dnf5 repoquery --available <name>.x86_64` must list it. COPR's
+   composed metadata can lag or stall (seen during Pulp migration):
+   if missing, run `copr-cli regenerate-repos <owner>/<project>`,
+   wait, re-check; do NOT announce until the version resolves.
 7. Attach RPMs to the GitHub release so visitors can download directly:
    `copr-cli download-build -r fedora-44-x86_64 --rpms --dest <dir> <BUILDID>`,
    then `gh release upload vX.Y.Z <dir>/fedora-44-x86_64/fedora-driver-manager-*.fc44.x86_64.rpm`
