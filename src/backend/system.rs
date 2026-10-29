@@ -377,6 +377,58 @@ impl SystemBackend {
         Self::root_output_to_result(&output)
     }
 
+    /// Streaming variant of [`Self::execute_root`]: stdout+stderr lines are
+    /// delivered to `on_line` as they arrive (called on a worker thread —
+    /// hop to the main thread before touching GTK). Returns full output.
+    /// Powers the install progress dialog.
+    pub fn execute_root_streaming(
+        action: &RootAction,
+        on_line: impl Fn(String) + Send + 'static,
+    ) -> Result<String> {
+        use std::io::{BufRead, BufReader};
+        use std::process::Stdio;
+
+        let mut child = Command::new("/usr/bin/pkexec")
+            .args(action.argv())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        // Pump both pipes on threads (same type via trait object) so a
+        // chatty stream can never block the child while the other fills.
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        for pipe in [
+            child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+            child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                    let _ = tx.send(line);
+                }
+            });
+        }
+        drop(tx);
+        let mut full = String::new();
+        for line in rx {
+            full.push_str(&line);
+            full.push('\n');
+            on_line(line);
+        }
+        let status = child.wait()?;
+        if status.success() {
+            Ok(full)
+        } else {
+            match status.code() {
+                Some(code) => anyhow::bail!("pkexec failed with exit code {code}: {}", full.trim()),
+                None => anyhow::bail!("pkexec terminated by signal"),
+            }
+        }
+    }
+
     /// Split from [`Self::execute_root`] for testability. On failure the
     /// pkexec exit code (126/127 carry meaning) is part of the error,
     /// mirroring [`Self::ensure_command_success`].

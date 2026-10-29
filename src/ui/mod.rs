@@ -1192,6 +1192,9 @@ fn make_package_action_button(
         // Confirm before running a privileged action: show what will run as root.
         let toast_c = toast_c.clone();
         let p = pkg_clone.clone();
+        // Owned clone for the 'static response/timeout closures below
+        // (`btn` itself only lives for this callback).
+        let btn_owned = Button::clone(btn);
         let parent = btn
             .root()
             .and_then(|root| root.downcast::<gtk4::Window>().ok());
@@ -1218,16 +1221,61 @@ fn make_package_action_button(
                 };
                 match action {
                     Ok(action) => {
-                        glib::spawn_future_local(async move {
-                            toast.add_toast(Toast::new(&format!("Running dnf5 {dnf_cmd} for {}...", p)));
-                            let res = SystemBackend::execute_root_async(action).await;
-                            match res {
-                                Ok(_) => toast.add_toast(Toast::new(&format!(
-                                    "{} {} successfully!",
-                                    p, done_word
-                                ))),
-                                Err(e) => toast.add_toast(Toast::new(&format!("Failed: {}", e))),
+                        let progress = show_install_progress(
+                            parent.as_ref(),
+                            &format!("{verb} {p}"),
+                            &format!("dnf5 {dnf_cmd} -y {p}"),
+                        );
+                        btn_owned.set_sensitive(false);
+                        // Shared worker→UI state: appended lines + final outcome.
+                        // A 100ms main-thread pump drains it (no channel API
+                        // in glib 0.20's prelude surface; polling is simple
+                        // and plenty smooth for a log view).
+                        let state = std::sync::Arc::new(std::sync::Mutex::new((
+                            Vec::<String>::new(),
+                            None::<Result<String, String>>,
+                        )));
+                        {
+                            let state = state.clone();
+                            let p_c = p.clone();
+                            let done_word_c = done_word.to_string();
+                            gio::spawn_blocking(move || {
+                                let line_state = state.clone();
+                                let res = SystemBackend::execute_root_streaming(&action, move |line| {
+                                    line_state.lock().unwrap().0.push(line);
+                                })
+                                .map(|_| format!("{p_c} {done_word_c} successfully!"))
+                                .map_err(|e| format!("{e}"));
+                                state.lock().unwrap().1 = Some(res);
+                            });
+                        }
+                        let progress_c = progress.clone();
+                        let btn_c = btn_owned.clone();
+                        let toast_c = toast.clone();
+                        let mut shown = 0usize;
+                        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+                            let mut guard = state.lock().unwrap();
+                            while shown < guard.0.len() {
+                                progress_c.append_line(&guard.0[shown]);
+                                shown += 1;
                             }
+                            let done = guard.1.take();
+                            drop(guard);
+                            if let Some(res) = done {
+                                btn_c.set_sensitive(true);
+                                match res {
+                                    Ok(msg) => {
+                                        progress_c.finish(true, &msg);
+                                        toast_c.add_toast(Toast::new(&msg));
+                                    }
+                                    Err(msg) => {
+                                        progress_c.finish(false, &msg);
+                                        toast_c.add_toast(Toast::new(&format!("Failed: {msg}")));
+                                    }
+                                }
+                                return glib::ControlFlow::Break;
+                            }
+                            glib::ControlFlow::Continue
                         });
                     }
                     Err(e) => {
@@ -1276,6 +1324,84 @@ fn make_download_button(package: &str, toast_overlay: &Rc<ToastOverlay>, short: 
         });
     });
     action_btn
+}
+
+/// Live progress dialog for privileged install/reinstall: streams the
+/// dnf5 output into a scrolling log, spins while running, reports the
+/// outcome. Cloned across main-thread closures (all fields are refcounted
+/// handles); closing early is harmless (the op continues, completion toasts).
+#[derive(Clone)]
+struct InstallProgress {
+    buffer: gtk4::TextBuffer,
+    scrolled: ScrolledWindow,
+    spinner: Spinner,
+    status: Label,
+}
+
+impl InstallProgress {
+    /// Append one dnf output line and pin the scroll to the bottom.
+    fn append_line(&self, line: &str) {
+        let mut end = self.buffer.end_iter();
+        self.buffer.insert(&mut end, line);
+        self.buffer.insert(&mut end, "\n");
+        let adj = self.scrolled.vadjustment();
+        adj.set_value((adj.upper() - adj.page_size()).max(0.0));
+    }
+
+    /// Stop the spinner, show the outcome, keep the log for inspection.
+    fn finish(&self, ok: bool, summary: &str) {
+        self.spinner.stop();
+        self.status.set_text(summary);
+        self.status.set_css_classes(if ok { &["success"] } else { &["error"] });
+    }
+}
+
+fn show_install_progress(
+    parent: Option<&gtk4::Window>,
+    title: &str,
+    command: &str,
+) -> InstallProgress {
+    let dialog = adw::Dialog::builder().title(title).build();
+    dialog.set_content_width(560);
+    dialog.set_content_height(380);
+    let layout = Box::new(Orientation::Vertical, 12);
+    layout.set_margin_top(24);
+    layout.set_margin_bottom(24);
+    layout.set_margin_start(24);
+    layout.set_margin_end(24);
+    let status_row = Box::new(Orientation::Horizontal, 12);
+    let spinner = Spinner::new();
+    spinner.start();
+    let status = Label::new(Some(&format!("Running: {command}")));
+    status_row.append(&spinner);
+    status_row.append(&status);
+    layout.append(&status_row);
+    let buffer = gtk4::TextBuffer::new(None);
+    let view = gtk4::TextView::builder()
+        .buffer(&buffer)
+        .editable(false)
+        .cursor_visible(false)
+        .monospace(true)
+        .wrap_mode(gtk4::WrapMode::WordChar)
+        .vexpand(true)
+        .build();
+    let scrolled = ScrolledWindow::builder()
+        .child(&view)
+        .vexpand(true)
+        .min_content_height(220)
+        .build();
+    layout.append(&scrolled);
+    let close_btn = Button::builder().label("Close").halign(Align::End).build();
+    {
+        let dialog_c = dialog.clone();
+        close_btn.connect_clicked(move |_| {
+            dialog_c.close();
+        });
+    }
+    layout.append(&close_btn);
+    dialog.set_child(Some(&layout));
+    dialog.present(parent);
+    InstallProgress { buffer, scrolled, spinner, status }
 }
 
 fn wrap_in_scrolled(widget: impl IsA<gtk4::Widget>) -> ScrolledWindow {
