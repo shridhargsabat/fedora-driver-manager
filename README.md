@@ -6,6 +6,16 @@ A modern, native hardware driver, firmware, and rollback manager for **Fedora Wo
 
 ---
 
+## Screenshots
+
+![Overview — system summary and driver health](screenshots/overview.png)
+*Overview — system summary and driver health at a glance.*
+
+![Firmware Updates — devices detected via fwupd](screenshots/firmware.png)
+*Firmware Updates — hardware firmware detected via fwupd/LVFS.*
+
+---
+
 ## Features
 
 - **Comprehensive Hardware Detection**:
