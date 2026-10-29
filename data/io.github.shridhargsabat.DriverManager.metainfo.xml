@@ -55,6 +55,7 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.4.0" date="2026-10-29"><description><p>Self-update check for Driver Manager.</p></description></release>
     <release version="0.3.0" date="2026-10-28"><description><p>Updater: pending updates page, auto-check notifications, download-only.</p></description></release>
     <release version="0.2.1" date="2026-10-28"><description><p>What's New menu dialog; driver reinstall option.</p></description></release>
     <release version="0.2.0" date="2026-10-28"><description><p>New Available Drivers and What's New pages.</p></description></release>
