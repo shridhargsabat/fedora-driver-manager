@@ -6,6 +6,27 @@ A modern, native hardware driver, firmware, and rollback manager for **Fedora Wo
 
 ---
 
+## Install
+
+**COPR (recommended, gets updates):**
+
+```bash
+sudo dnf copr enable -y shridhargsabat/fedora-driver-manager
+sudo dnf install -y fedora-driver-manager
+```
+
+**Direct RPM:** download `fedora-driver-manager-<version>.fc44.x86_64.rpm`
+from the [releases page](https://github.com/shridhargsabat/fedora-driver-manager/releases)
+and install it:
+
+```bash
+sudo dnf install ./fedora-driver-manager-*.fc44.x86_64.rpm
+```
+
+Then launch **Driver Manager** from the app grid.
+
+---
+
 ## Screenshots
 
 ![Overview — system summary and driver health](screenshots/overview.png)
