@@ -238,6 +238,17 @@ impl SystemBackend {
         Self::parse_pending_updates(&String::from_utf8_lossy(&output.stdout), known)
     }
 
+    /// Self-update check for this very package (unprivileged).
+    /// Reuses the driver pair: `info` for the installed baseline,
+    /// `check-upgrade` for the authoritative upgrade verdict.
+    /// `Ok(None)` = up to date or not RPM-installed.
+    pub fn get_app_update() -> Result<Option<PackageUpdate>> {
+        const SELF_PACKAGE: &str = "fedora-driver-manager";
+        let known = Self::get_driver_packages(&[SELF_PACKAGE])?;
+        let mut updates = Self::get_pending_updates(&[SELF_PACKAGE], &known)?;
+        Ok(updates.pop())
+    }
+
     /// Download a package RPM without installing (unprivileged).
     /// Returns the downloaded `.rpm` paths found in `dest_dir` afterwards.
     /// `dest_dir` must exist (caller creates it); names validated like root ops.
@@ -561,6 +572,14 @@ mod tests {
         assert!(!txs.is_empty(), "expected at least one transaction");
         assert_ne!(txs[0].date, "Recent");
         assert!(!txs[0].command_line.is_empty());
+    }
+
+    /// Live self-update probe. Ignored by default (needs dnf5 + repo).
+    #[test]
+    #[ignore]
+    fn live_app_update_query_runs() {
+        // Must not error regardless of outcome (update pending or not).
+        let _ = SystemBackend::get_app_update().expect("dnf5 must run");
     }
 
     #[test]

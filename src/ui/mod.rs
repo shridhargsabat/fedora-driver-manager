@@ -322,6 +322,7 @@ struct ScanResults {
     report: ScanReport,
     driver_packages: Result<Vec<DriverPackage>, String>,
     pending_updates: Result<Vec<PackageUpdate>, String>,
+    app_update: Result<Option<PackageUpdate>, String>,
     firmware: Result<Vec<FirmwareItem>, String>,
     history: Result<Vec<DnfTransaction>, String>,
     laptop_model: String,
@@ -342,10 +343,12 @@ impl ScanResults {
             }
             Err(e) => Err(format!("driver query failed: {e}")),
         };
+        let app_update = SystemBackend::get_app_update().map_err(|e| format!("{e:#}"));
         Self {
             report,
             driver_packages,
             pending_updates,
+            app_update,
             firmware: SystemBackend::get_firmware_devices().map_err(|e| format!("{e:#}")),
             history: SystemBackend::get_dnf_history(10).map_err(|e| format!("{e:#}")),
             laptop_model: SystemBackend::get_laptop_model(),
@@ -383,15 +386,19 @@ fn refresh_data_async(
         };
         // Gate the success toast on a genuinely clean scan: every failure
         // path already produced its own error toast in render_data.
-        let update_keys: Vec<String> = match &results.pending_updates {
+        let mut update_keys: Vec<String> = match &results.pending_updates {
             Ok(pkgs) => pkgs.iter().map(|u| u.key()).collect(),
             Err(_) => Vec::new(),
         };
+        if let Ok(Some(app)) = &results.app_update {
+            update_keys.push(app.key());
+        }
         let clean = results.report.errors().is_empty()
             && results.firmware.is_ok()
             && results.history.is_ok()
             && results.driver_packages.is_ok()
-            && results.pending_updates.is_ok();
+            && results.pending_updates.is_ok()
+            && results.app_update.is_ok();
         let update_total = render_data(&stack, &devices_state, &toast_overlay, results);
         // Relabel the Updates sidebar row with the live count.
         {
@@ -518,7 +525,8 @@ fn render_data(
         let pkgs: &[PackageUpdate] =
             results.pending_updates.as_ref().map(Vec::as_slice).unwrap_or(&[]);
         let fw: &[FirmwareItem] = results.firmware.as_ref().map(Vec::as_slice).unwrap_or(&[]);
-        update_count(pkgs, fw)
+        let app_pending = matches!(results.app_update, Ok(Some(_)));
+        update_count(pkgs, fw) + usize::from(app_pending)
     };
 
     for err in &scan_errors {
@@ -811,7 +819,13 @@ fn render_data(
     stack.add_named(&wrap_in_scrolled(hist_page), Some("history"));
 
     add_drivers_page(stack, &results.driver_packages, toast_overlay);
-    add_updates_page(stack, &results.pending_updates, &fw_result, toast_overlay);
+    add_updates_page(
+        stack,
+        &results.pending_updates,
+        &results.app_update,
+        &fw_result,
+        toast_overlay,
+    );
     pending_for_count
 }
 
@@ -911,10 +925,42 @@ fn add_drivers_page(
 fn add_updates_page(
     stack: &gtk4::Stack,
     packages: &Result<Vec<PackageUpdate>, String>,
+    app_update: &Result<Option<PackageUpdate>, String>,
     firmware: &Result<Vec<FirmwareItem>, String>,
     toast_overlay: &Rc<ToastOverlay>,
 ) {
     let page = PreferencesPage::new();
+    // --- Application update (this app itself) ---
+    let app_group = PreferencesGroup::builder()
+        .title("Driver Manager updates")
+        .description("New versions of this app")
+        .build();
+    match app_update {
+        Err(err) => {
+            app_group.add(
+                &ActionRow::builder()
+                    .title("Could not check for app updates")
+                    .subtitle(err.as_str())
+                    .build(),
+            );
+        }
+        Ok(None) => {
+            app_group.add(&ActionRow::builder().title("Driver Manager is up to date").build());
+        }
+        Ok(Some(update)) => {
+            let row = ActionRow::builder()
+                .title("Driver Manager")
+                .subtitle(update.summary())
+                .use_markup(false)
+                .build();
+            row.add_prefix(&Image::from_icon_name("software-update-urgent-symbolic"));
+            row.add_suffix(&make_download_button(&update.name, toast_overlay));
+            // `dnf5 install` upgrades an installed package to latest: reuse it.
+            row.add_suffix(&make_install_button(&update.name, toast_overlay));
+            app_group.add(&row);
+        }
+    }
+    page.add(&app_group);
     // --- Package upgrades ---
     let pkg_group = PreferencesGroup::builder()
         .title("Driver package updates")
